@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+  <title>SecureChat</title>
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+
+  <!-- ============ AUTH SCREEN ============ -->
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 5C4 4.44772 4.44772 4 5 4H16C16.5523 4 17 4.44772 17 5V13C17 13.5523 16.5523 14 16 14H9L5.5 17V14H5C4.44772 14 4 13.5523 4 13V5Z" fill="#0D1120"/>
+            <path d="M20 10V17C20 17.5523 19.5523 18 19 18H18.5V20L16 18H12.5" stroke="#0D1120" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <span class="brand-name">SecureChat</span>
+      </div>
+
+      <!-- Login -->
+      <form id="login-form">
+        <h1 class="auth-heading">Welcome back</h1>
+        <p class="auth-subheading">Log in to pick up your conversations.</p>
+        <div id="login-error" class="form-error hidden"></div>
+        <div class="field">
+          <label for="login-identifier">Username or email</label>
+          <input id="login-identifier" name="identifier" type="text" autocomplete="username" required />
+        </div>
+        <div class="field">
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+        </div>
+        <button type="submit" class="btn btn-primary" id="login-submit">Log in</button>
+        <p class="auth-switch">New here? <button type="button" id="show-register">Create an account</button></p>
+      </form>
+
+      <!-- Register -->
+      <form id="register-form" class="hidden">
+        <h1 class="auth-heading">Create your account</h1>
+        <p class="auth-subheading">Takes about ten seconds.</p>
+        <div id="register-error" class="form-error hidden"></div>
+        <div class="field">
+          <label for="register-username">Username</label>
+          <input id="register-username" name="username" type="text" autocomplete="username" minlength="3" maxlength="20" required />
+          <div class="field-hint">3–20 characters: letters, numbers, underscores.</div>
+        </div>
+        <div class="field">
+          <label for="register-email">Email</label>
+          <input id="register-email" name="email" type="email" autocomplete="email" required />
+        </div>
+        <div class="field">
+          <label for="register-password">Password</label>
+          <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" required />
+          <div class="field-hint">At least 8 characters.</div>
+        </div>
+        <button type="submit" class="btn btn-primary" id="register-submit">Create account</button>
+        <p class="auth-switch">Already have an account? <button type="button" id="show-login">Log in</button></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ APP SCREEN ============ -->
+  <div id="app-screen" class="app hidden">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-mark" style="width:26px;height:26px;">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:14px;height:14px;">
+            <path d="M4 5C4 4.44772 4.44772 4 5 4H16C16.5523 4 17 4.44772 17 5V13C17 13.5523 16.5523 14 16 14H9L5.5 17V14H5C4.44772 14 4 13.5523 4 13V5Z" fill="#0D1120"/>
+          </svg>
+        </div>
+        <span class="brand-name">SecureChat</span>
+      </div>
+
+      <div class="sidebar-search">
+        <input id="user-search" type="text" placeholder="Find people to message…" autocomplete="off" />
+        <div id="search-results" class="search-results hidden"></div>
+      </div>
+
+      <div class="sidebar-scroll">
+        <div class="sidebar-section">
+          <span class="sidebar-section-title">Direct messages</span>
+        </div>
+        <div id="dm-list"></div>
+
+        <div class="sidebar-section">
+          <span class="sidebar-section-title">Rooms</span>
+          <div>
+            <button class="icon-btn" id="browse-rooms-btn" title="Browse rooms">⌕</button>
+            <button class="icon-btn" id="new-room-btn" title="New room">+</button>
+          </div>
+        </div>
+        <div id="room-list"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="avatar sm" id="me-avatar"></div>
+        <span class="me-name" id="me-name"></span>
+        <button class="icon-btn" id="logout-btn" title="Log out">⎋</button>
+      </div>
+    </aside>
+
+    <main class="chat-pane" id="chat-pane">
+      <div class="chat-empty" id="chat-empty">
+        Pick a conversation, or search for someone to message.
+      </div>
+
+      <div id="chat-active" class="hidden" style="display:contents;">
+        <div class="chat-header">
+          <button class="back-btn" id="back-btn">←</button>
+          <div class="avatar sm" id="chat-avatar"></div>
+          <div style="flex:1; min-width:0;">
+            <div class="chat-header-title" id="chat-title"></div>
+            <div class="chat-header-sub" id="chat-subtitle"></div>
+          </div>
+          <button class="icon-btn hidden" id="encryption-badge" title="View safety number">🔒</button>
+          <button class="icon-btn" id="members-btn" title="Members">☰</button>
+        </div>
+
+        <div class="messages-scroll" id="messages-scroll"></div>
+        <div class="typing-indicator" id="typing-indicator"></div>
+
+        <form class="composer" id="composer-form">
+          <textarea id="composer-input" rows="1" placeholder="Message…" maxlength="4000"></textarea>
+          <button type="submit" class="btn btn-primary" id="composer-send">Send</button>
+        </form>
+
+        <div class="members-panel hidden" id="members-panel">
+          <h3>Members</h3>
+          <div id="members-list"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ NEW GROUP MODAL ============ -->
+  <div id="new-room-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Create a room</h2>
+      <p>Anyone can find and join it from "Browse rooms".</p>
+      <form id="new-room-form">
+        <div class="field">
+          <label for="new-room-name">Room name</label>
+          <input id="new-room-name" type="text" minlength="2" maxlength="40" required />
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn-primary">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ BROWSE ROOMS MODAL ============ -->
+  <div id="browse-rooms-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Browse rooms</h2>
+      <p>Join a room to start chatting with everyone in it.</p>
+      <div id="joinable-list" class="joinable-list"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-modal>Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SAFETY NUMBER MODAL ============ -->
+  <div id="safety-number-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <h2>Verify encryption</h2>
+      <p>
+        Read this code to <span id="safety-number-username"></span> over another channel — a phone call, in person,
+        a different app — and confirm it matches on both sides. This is how you catch an attacker impersonating
+        the server, which end-to-end encryption alone doesn't rule out.
+      </p>
+      <div id="safety-number-code" class="safety-code"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-modal>Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

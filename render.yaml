@@ -1,0 +1,31 @@
+# Render Blueprint — lets Render provision the web service AND the database
+# together in one step, with DATABASE_URL and JWT_SECRET wired up
+# automatically. In the Render Dashboard: New + -> Blueprint -> connect this
+# repo. See https://render.com/docs/blueprint-spec for the full reference.
+
+databases:
+  - name: securechat-db
+    plan: free
+
+services:
+  - type: web
+    name: securechat
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: securechat-db
+          property: connectionString
+      # Render prompts you for this during setup. Put in your best guess
+      # (https://securechat.onrender.com, or whatever name you picked) —
+      # you can correct it afterward in the dashboard once you see your
+      # actual URL; same-origin requests work regardless in the meantime.
+      - key: CLIENT_ORIGIN
+        sync: false
