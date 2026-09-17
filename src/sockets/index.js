@@ -139,6 +139,76 @@ function initSockets(io) {
       }
     });
 
+    socket.on('message:edit', async ({ roomId, messageId, content, iv } = {}, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!roomId || !messageId) return reply({ error: 'roomId and messageId are required.' });
+        const room = await roomRepo.getRoomById(roomId);
+        if (!room || !(await roomRepo.isMember(user.id, roomId))) {
+          return reply({ error: 'You are not a member of this room.' });
+        }
+        const existing = await messageRepo.getMessageById(messageId);
+        if (!existing || existing.roomId !== roomId) return reply({ error: 'Message not found.' });
+        if (existing.senderId !== user.id) return reply({ error: 'You can only edit your own messages.' });
+        if (existing.deletedAt) return reply({ error: 'Cannot edit a deleted message.' });
+
+        let updated;
+        if (!room.is_group) {
+          if (!iv || typeof content !== 'string' || !content) {
+            return reply({ error: 'Direct messages must be sent encrypted.' });
+          }
+          if (content.length > MAX_CIPHERTEXT_LENGTH) return reply({ error: 'Message too large.' });
+          updated = await messageRepo.updateMessage(messageId, { content, iv });
+        } else {
+          const clean = sanitizeMessageContent(content);
+          if (!clean) return reply({ error: 'Message cannot be empty.' });
+          updated = await messageRepo.updateMessage(messageId, { content: clean });
+        }
+
+        io.to(`room:${roomId}`).emit('message:updated', updated);
+        reply({ message: updated });
+      } catch (err) {
+        console.error('message:edit failed:', err);
+        reply({ error: 'Something went wrong editing that message.' });
+      }
+    });
+
+    socket.on('message:delete', async ({ roomId, messageId } = {}, ack) => {
+      const reply = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!roomId || !messageId) return reply({ error: 'roomId and messageId are required.' });
+        if (!(await roomRepo.isMember(user.id, roomId))) {
+          return reply({ error: 'You are not a member of this room.' });
+        }
+        const existing = await messageRepo.getMessageById(messageId);
+        if (!existing || existing.roomId !== roomId) return reply({ error: 'Message not found.' });
+        if (existing.senderId !== user.id) return reply({ error: 'You can only delete your own messages.' });
+
+        if (!existing.deletedAt) {
+          const deleted = await messageRepo.softDeleteMessage(messageId);
+          io.to(`room:${roomId}`).emit('message:deleted', { messageId, roomId, deletedAt: deleted.deletedAt });
+        }
+        reply({ ok: true });
+      } catch (err) {
+        console.error('message:delete failed:', err);
+        reply({ error: 'Something went wrong deleting that message.' });
+      }
+    });
+
+    // Marks the room read for THIS user right now — used when they open a
+    // room and whenever a new message arrives while it's the active room,
+    // so the unread count never accumulates for something they're already
+    // looking at.
+    socket.on('room:read', async ({ roomId } = {}) => {
+      try {
+        if (roomId && (await roomRepo.isMember(user.id, roomId))) {
+          await roomRepo.markRoomRead(user.id, roomId);
+        }
+      } catch (err) {
+        console.error('room:read failed:', err);
+      }
+    });
+
     socket.on('typing:start', async ({ roomId } = {}) => {
       try {
         if (roomId && (await roomRepo.isMember(user.id, roomId))) {

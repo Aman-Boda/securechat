@@ -24,11 +24,13 @@ CREATE TABLE IF NOT EXISTS rooms (
 );
 
 CREATE TABLE IF NOT EXISTS room_memberships (
-  id        TEXT PRIMARY KEY,
-  user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  room_id   TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-  role      TEXT NOT NULL DEFAULT 'member',
-  joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id            TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  room_id       TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  role          TEXT NOT NULL DEFAULT 'member',
+  joined_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Everything in this room sent after this timestamp counts as unread.
+  last_read_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, room_id)
 );
 
@@ -59,3 +61,4 @@ CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, create
 -- exist or not — so upgrading an existing deployment just works.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS public_key TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS iv TEXT;
+ALTER TABLE room_memberships ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMPTZ NOT NULL DEFAULT now();

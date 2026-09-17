@@ -16,5 +16,13 @@ router.post(
   validate,
   asyncHandler(messageController.send)
 );
+router.patch(
+  '/:messageId',
+  body('content').isString().withMessage('content is required.'),
+  body('iv').optional().isString().withMessage('iv must be a string.'),
+  validate,
+  asyncHandler(messageController.edit)
+);
+router.delete('/:messageId', asyncHandler(messageController.del));
 
 module.exports = router;

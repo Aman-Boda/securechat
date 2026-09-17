@@ -10,8 +10,9 @@ with security as a first-class concern rather than an afterthought.
 - Real-time delivery over WebSockets (Socket.io)
 - Typing indicators
 - Online / offline presence with "last seen"
-- Message history, paginated on the server (API-ready; the UI currently
-  loads the most recent 50 per room — see "Possible next steps" below)
+- Message history with infinite scroll (loads older messages as you scroll up)
+- Message editing and deletion (deleted messages leave a "Message deleted" tombstone, not a silent gap — and the content is actually cleared from the database, not just hidden)
+- Unread message badges, updated live
 - Search for people to start a conversation with
 - Browse and join public group rooms
 
@@ -238,28 +239,34 @@ cookie (the browser sends it automatically).
 | POST | `/rooms/direct` | Start/open a DM `{ userId }` |
 | POST | `/rooms/:id/join` | Join a group room |
 | POST | `/rooms/:id/leave` | Leave a room |
+| POST | `/rooms/:id/read` | Mark a room as read (clears its unread badge) |
 | GET | `/rooms/:id/members` | List members |
 | GET | `/rooms/:id/messages` | History (`?before=&limit=`) |
 | POST | `/rooms/:id/messages` | Send a message (REST fallback — the app itself uses the socket event below) |
+| PATCH | `/rooms/:id/messages/:messageId` | Edit a message you sent |
+| DELETE | `/rooms/:id/messages/:messageId` | Delete a message you sent (leaves a tombstone, clears the content) |
 
 ### Socket.io events
 
 | Direction | Event | Payload |
 |---|---|---|
 | emit | `message:send` | `{ roomId, content }` for group rooms, `{ roomId, content, iv }` for DMs (required — see E2EE section) → ack `{ message }` or `{ error }` |
+| emit | `message:edit` | `{ roomId, messageId, content, iv? }` → ack `{ message }` or `{ error }` |
+| emit | `message:delete` | `{ roomId, messageId }` → ack `{ ok: true }` or `{ error }` |
+| emit | `room:read` | `{ roomId }` — marks the room read, no ack |
 | emit | `typing:start` / `typing:stop` | `{ roomId }` |
 | emit | `room:subscribe` / `room:unsubscribe` | `{ roomId }` |
 | listen | `message:new` | full message object |
+| listen | `message:updated` | full message object, post-edit |
+| listen | `message:deleted` | `{ messageId, roomId, deletedAt }` |
 | listen | `typing:update` | `{ roomId, userId, username, isTyping }` |
 | listen | `presence:update` | `{ userId, online, lastSeenAt? }` |
 | listen | `room:new` | `{ room }` — pushed when someone starts a DM with you or you're added to a room, so it appears without a page refresh |
 
 ## Possible next steps
 
-- Paginate the message view (load older messages on scroll — the API already supports `?before=`)
-- Unread-message badges
-- Message editing / deletion
 - Email verification and password reset flow
 - Forward secrecy (rotate the derived key per-message, Signal-style, instead of one static key per conversation)
 - Multi-device support for encrypted DMs (currently: a new browser/device means a new key pair, and old encrypted messages can't be read there)
 - Group room encryption (harder — needs encrypting to multiple recipients and handling membership changes)
+- Cross-tab unread sync (right now, reading on one open tab doesn't clear the badge on another tab of the same account until it re-fetches)

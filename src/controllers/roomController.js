@@ -77,4 +77,10 @@ async function getMembers(req, res) {
   return res.json({ members: await roomRepo.getMembers(req.room.id) });
 }
 
-module.exports = { listMine, listJoinable, createGroup, startDirect, join, leave, getMembers };
+// Guarded by requireRoomMembership.
+async function markRead(req, res) {
+  await roomRepo.markRoomRead(req.user.id, req.room.id);
+  return res.status(204).send();
+}
+
+module.exports = { listMine, listJoinable, createGroup, startDirect, join, leave, getMembers, markRead };

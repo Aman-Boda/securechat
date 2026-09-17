@@ -30,6 +30,7 @@ router.post(
 
 router.post('/:roomId/join', loadRoom, asyncHandler(roomController.join));
 router.post('/:roomId/leave', requireRoomMembership, asyncHandler(roomController.leave));
+router.post('/:roomId/read', requireRoomMembership, asyncHandler(roomController.markRead));
 router.get('/:roomId/members', requireRoomMembership, asyncHandler(roomController.getMembers));
 router.use('/:roomId/messages', requireRoomMembership, messagesRouter);
 

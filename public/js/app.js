@@ -12,6 +12,7 @@ const state = {
   myKeyPair: null, // { publicKey, privateKey } CryptoKey objects, this browser's E2EE identity
   myPublicKeyJwk: null,
   sharedKeys: new Map(), // roomId -> derived AES-GCM CryptoKey, for DM rooms only
+  roomPagination: new Map(), // roomId -> { hasMore: boolean, loading: boolean }
 };
 
 // ---------------------------------------------------------------------------
@@ -174,6 +175,7 @@ function upsertRoom(partial) {
       otherMember: null,
       lastMessage: null,
       memberCount: partial.isGroup ? 1 : 2,
+      unreadCount: 0,
       ...partial,
     });
   } else {
@@ -183,7 +185,7 @@ function upsertRoom(partial) {
 
 function renderRoomItem(room) {
   const el = document.createElement('div');
-  el.className = 'room-item' + (room.id === state.activeRoomId ? ' active' : '');
+  el.className = 'room-item' + (room.id === state.activeRoomId ? ' active' : '') + (room.unreadCount > 0 ? ' has-unread' : '');
   el.dataset.roomId = room.id;
 
   const avatarName = room.isGroup ? room.name || 'Room' : room.otherMember?.username || '?';
@@ -208,7 +210,13 @@ function renderRoomItem(room) {
   previewEl.className = 'room-item-preview';
   if (room.lastMessage) {
     const prefix = room.lastMessage.senderId === state.me.id ? 'You: ' : '';
-    previewEl.textContent = room.lastMessage.iv ? `${prefix}🔒 Encrypted message` : prefix + room.lastMessage.content;
+    if (room.lastMessage.deletedAt) {
+      previewEl.textContent = `${prefix}Message deleted`;
+    } else if (room.lastMessage.iv) {
+      previewEl.textContent = `${prefix}🔒 Encrypted message`;
+    } else {
+      previewEl.textContent = prefix + room.lastMessage.content;
+    }
   } else {
     previewEl.textContent = room.isGroup
       ? `${room.memberCount} member${room.memberCount === 1 ? '' : 's'}`
@@ -217,6 +225,14 @@ function renderRoomItem(room) {
 
   textWrap.append(nameEl, previewEl);
   el.append(avatar, textWrap);
+
+  if (room.unreadCount > 0) {
+    const badge = document.createElement('span');
+    badge.className = 'unread-badge';
+    badge.textContent = room.unreadCount > 99 ? '99+' : String(room.unreadCount);
+    el.appendChild(badge);
+  }
+
   el.addEventListener('click', () => selectRoom(room.id));
   return el;
 }
@@ -270,20 +286,34 @@ async function selectRoom(roomId) {
   renderChatHeader(room);
   updateComposerAvailability(room);
   emitSocket('room:subscribe', { roomId });
+  markRoomRead(roomId);
 
   if (!state.messagesByRoom.has(roomId)) {
     try {
       const data = await api.getMessages(roomId);
       const decorated = await Promise.all(data.messages.map(decorateWithDisplayContent));
       state.messagesByRoom.set(roomId, decorated);
+      state.roomPagination.set(roomId, { hasMore: data.messages.length >= 50, loading: false });
     } catch (err) {
       showToast(err.message);
       state.messagesByRoom.set(roomId, []);
+      state.roomPagination.set(roomId, { hasMore: false, loading: false });
     }
   }
-  renderMessages(roomId);
+  renderMessages(roomId, { anchorToBottom: true });
   renderTypingIndicator(roomId);
   $('composer-input').focus();
+}
+
+// Clears the unread badge immediately (optimistic) and tells the server,
+// so it stays cleared next time this room's list loads.
+function markRoomRead(roomId) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (room && room.unreadCount > 0) {
+    room.unreadCount = 0;
+    renderRoomLists();
+  }
+  emitSocket('room:read', { roomId });
 }
 
 function renderChatHeader(room) {
@@ -321,6 +351,7 @@ function renderMessageRow(msg) {
   const mine = msg.senderId === state.me.id;
   const row = document.createElement('div');
   row.className = 'msg-row' + (mine ? ' mine' : '');
+  row.dataset.messageId = msg.id;
 
   const avatar = makeAvatarEl(msg.senderUsername, msg.senderAvatarColor, 'sm');
   const body = document.createElement('div');
@@ -336,17 +367,145 @@ function renderMessageRow(msg) {
   time.textContent = formatTime(msg.createdAt);
   meta.append(sender, time);
 
+  if (msg.editedAt && !msg.deletedAt) {
+    const editedTag = document.createElement('span');
+    editedTag.className = 'msg-edited-tag';
+    editedTag.textContent = '(edited)';
+    meta.appendChild(editedTag);
+  }
+
   const bubble = document.createElement('div');
   bubble.className = 'msg-bubble';
-  bubble.textContent = msg.displayContent ?? msg.content;
+  if (msg.deletedAt) {
+    bubble.classList.add('deleted');
+    bubble.textContent = 'Message deleted';
+  } else {
+    bubble.textContent = msg.displayContent ?? msg.content;
+  }
 
   body.append(meta, bubble);
   row.append(avatar, body);
+
+  if (mine && !msg.deletedAt) {
+    const actions = document.createElement('div');
+    actions.className = 'msg-actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'msg-action-btn';
+    editBtn.title = 'Edit';
+    editBtn.textContent = '✏️';
+    editBtn.addEventListener('click', () => enterEditMode(msg, row));
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'msg-action-btn';
+    deleteBtn.title = 'Delete';
+    deleteBtn.textContent = '🗑';
+    deleteBtn.addEventListener('click', () => confirmDeleteMessage(msg));
+
+    actions.append(editBtn, deleteBtn);
+    row.appendChild(actions);
+  }
+
   return row;
 }
 
-function renderMessages(roomId) {
+function replaceMessageRow(msg) {
   const container = $('messages-scroll');
+  const existing = container.querySelector(`[data-message-id="${CSS.escape(msg.id)}"]`);
+  if (existing) existing.replaceWith(renderMessageRow(msg));
+}
+
+function enterEditMode(msg, row) {
+  const bubble = row.querySelector('.msg-bubble');
+  const original = msg.displayContent ?? msg.content;
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'msg-edit-input';
+  textarea.value = original;
+
+  const actionsRow = document.createElement('div');
+  actionsRow.className = 'msg-edit-actions';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'msg-edit-link';
+  saveBtn.textContent = 'Save';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'msg-edit-link';
+  cancelBtn.textContent = 'Cancel';
+  actionsRow.append(saveBtn, cancelBtn);
+
+  bubble.replaceWith(textarea, actionsRow);
+  textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+  function cancel() {
+    textarea.replaceWith(bubble);
+    actionsRow.remove();
+  }
+
+  async function save() {
+    const newContent = textarea.value.trim();
+    if (!newContent || newContent === original) {
+      cancel();
+      return;
+    }
+    saveBtn.disabled = true;
+
+    let payload = { roomId: msg.roomId, messageId: msg.id, content: newContent };
+    const room = state.rooms.find((r) => r.id === msg.roomId);
+    if (room && !room.isGroup) {
+      const sharedKey = await getSharedKeyForRoom(msg.roomId);
+      if (!sharedKey) {
+        showToast('Cannot edit — secure messaging is not ready for this conversation.');
+        saveBtn.disabled = false;
+        return;
+      }
+      const encrypted = await encryptText(sharedKey, newContent);
+      payload = { roomId: msg.roomId, messageId: msg.id, content: encrypted.ciphertext, iv: encrypted.iv };
+    }
+
+    emitSocket('message:edit', payload, (res) => {
+      if (res && res.error) {
+        showToast(res.error);
+        saveBtn.disabled = false;
+      }
+      // On success the message:updated broadcast replaces this row for us.
+    });
+  }
+
+  saveBtn.addEventListener('click', save);
+  cancelBtn.addEventListener('click', cancel);
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      save();
+    } else if (e.key === 'Escape') {
+      cancel();
+    }
+  });
+}
+
+function confirmDeleteMessage(msg) {
+  if (!window.confirm('Delete this message? This cannot be undone.')) return;
+  emitSocket('message:delete', { roomId: msg.roomId, messageId: msg.id }, (res) => {
+    if (res && res.error) showToast(res.error);
+  });
+}
+
+// anchorToBottom: true forces scroll-to-bottom (opening a room), false
+// preserves the exact scroll offset (prepending older history), and null
+// (the default) keeps whatever felt natural — sticks to bottom only if the
+// user was already near it, so an incoming message doesn't yank someone back
+// down while they're reading up through history.
+function renderMessages(roomId, { anchorToBottom = null } = {}) {
+  const container = $('messages-scroll');
+  const oldScrollHeight = container.scrollHeight;
+  const oldScrollTop = container.scrollTop;
+  const wasNearBottom = oldScrollHeight - oldScrollTop - container.clientHeight < 80;
+
   container.innerHTML = '';
   const messages = state.messagesByRoom.get(roomId) || [];
   let lastDay = null;
@@ -361,8 +520,47 @@ function renderMessages(roomId) {
     }
     container.appendChild(renderMessageRow(msg));
   });
-  container.scrollTop = container.scrollHeight;
+
+  const shouldStickToBottom = anchorToBottom === null ? wasNearBottom : anchorToBottom;
+  if (shouldStickToBottom) {
+    container.scrollTop = container.scrollHeight;
+  } else {
+    container.scrollTop = oldScrollTop + (container.scrollHeight - oldScrollHeight);
+  }
 }
+
+async function maybeLoadOlderMessages(roomId) {
+  if (!roomId) return;
+  const pagination = state.roomPagination.get(roomId) || { hasMore: true, loading: false };
+  if (!pagination.hasMore || pagination.loading) return;
+
+  const messages = state.messagesByRoom.get(roomId) || [];
+  if (messages.length === 0) return;
+
+  pagination.loading = true;
+  state.roomPagination.set(roomId, pagination);
+
+  try {
+    const oldest = messages[0];
+    const data = await api.getMessages(roomId, oldest.createdAt);
+    const decorated = await Promise.all(data.messages.map(decorateWithDisplayContent));
+
+    pagination.hasMore = data.messages.length >= 50;
+    if (decorated.length > 0) {
+      state.messagesByRoom.set(roomId, [...decorated, ...messages]);
+      if (roomId === state.activeRoomId) renderMessages(roomId, { anchorToBottom: false });
+    }
+  } catch {
+    showToast('Could not load older messages.');
+  } finally {
+    pagination.loading = false;
+    state.roomPagination.set(roomId, pagination);
+  }
+}
+
+$('messages-scroll').addEventListener('scroll', (e) => {
+  if (e.target.scrollTop < 100) maybeLoadOlderMessages(state.activeRoomId);
+});
 
 async function handleIncomingMessage(rawMsg) {
   const msg = await decorateWithDisplayContent(rawMsg);
@@ -377,7 +575,16 @@ async function handleIncomingMessage(rawMsg) {
       createdAt: msg.createdAt,
       senderId: msg.senderId,
       senderUsername: msg.senderUsername,
+      deletedAt: null,
     };
+
+    const isMine = msg.senderId === state.me.id;
+    const isActive = msg.roomId === state.activeRoomId;
+    if (!isMine && !isActive) {
+      room.unreadCount = (room.unreadCount || 0) + 1;
+    } else if (isActive) {
+      emitSocket('room:read', { roomId: msg.roomId });
+    }
   }
   renderRoomLists();
 
@@ -385,6 +592,50 @@ async function handleIncomingMessage(rawMsg) {
     if (!list) state.messagesByRoom.set(msg.roomId, [msg]);
     renderMessages(msg.roomId);
   }
+}
+
+async function handleMessageUpdated(rawMsg) {
+  const msg = await decorateWithDisplayContent(rawMsg);
+  const list = state.messagesByRoom.get(msg.roomId);
+  if (list) {
+    const idx = list.findIndex((m) => m.id === msg.id);
+    if (idx !== -1) list[idx] = msg;
+  }
+
+  const room = state.rooms.find((r) => r.id === msg.roomId);
+  if (room && room.lastMessage && room.lastMessage.createdAt === msg.createdAt) {
+    room.lastMessage = {
+      content: msg.content,
+      iv: msg.iv,
+      createdAt: msg.createdAt,
+      senderId: msg.senderId,
+      senderUsername: msg.senderUsername,
+      deletedAt: msg.deletedAt,
+    };
+    renderRoomLists();
+  }
+
+  if (msg.roomId === state.activeRoomId) replaceMessageRow(msg);
+}
+
+function handleMessageDeleted({ messageId, roomId, deletedAt }) {
+  const list = state.messagesByRoom.get(roomId);
+  let updatedMsg = null;
+  if (list) {
+    const idx = list.findIndex((m) => m.id === messageId);
+    if (idx !== -1) {
+      list[idx] = { ...list[idx], content: '', iv: null, deletedAt, displayContent: undefined };
+      updatedMsg = list[idx];
+
+      const room = state.rooms.find((r) => r.id === roomId);
+      if (room && room.lastMessage && idx === list.length - 1) {
+        room.lastMessage = { ...room.lastMessage, content: '', iv: null, deletedAt };
+        renderRoomLists();
+      }
+    }
+  }
+
+  if (roomId === state.activeRoomId && updatedMsg) replaceMessageRow(updatedMsg);
 }
 
 // Fired when someone starts a DM with us, or (in principle) whenever the
@@ -834,6 +1085,8 @@ async function initApp(user) {
 
   connectSocket();
   onSocket('message:new', handleIncomingMessage);
+  onSocket('message:updated', handleMessageUpdated);
+  onSocket('message:deleted', handleMessageDeleted);
   onSocket('presence:update', handlePresenceUpdate);
   onSocket('typing:update', handleTypingUpdate);
   onSocket('room:new', handleNewRoom);
