@@ -31,6 +31,7 @@
 html,
 body {
   height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -502,6 +503,8 @@ a {
   flex-direction: column;
   min-width: 0;
   height: 100vh;
+  overflow: hidden;
+  position: relative;
 }
 
 .chat-empty {
@@ -513,6 +516,17 @@ a {
   font-size: 14px;
   text-align: center;
   padding: 24px;
+}
+
+/* Replaces the old display:contents approach — a real flex container is
+   more predictable across browsers, especially for scroll containment.
+   The global .hidden rule (display: none !important) already overrides
+   this when the panel is hidden. */
+.chat-active-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .chat-header {
@@ -547,6 +561,7 @@ a {
 
 .messages-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px;
   display: flex;
@@ -904,10 +919,6 @@ a {
   margin-left: auto;
   font-size: 11.5px;
   color: var(--text-faint);
-}
-
-.chat-pane {
-  position: relative;
 }
 
 /* ==========================================================================
