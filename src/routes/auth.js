@@ -29,4 +29,28 @@ router.post('/login', authLimiter, loginValidators, validate, asyncHandler(authC
 router.post('/logout', requireAuth, authController.logout);
 router.get('/me', requireAuth, authController.me);
 
+router.post(
+  '/verify-email',
+  authLimiter,
+  body('token').isString().notEmpty(),
+  validate,
+  asyncHandler(authController.verifyEmail)
+);
+router.post('/resend-verification', authLimiter, requireAuth, asyncHandler(authController.resendVerification));
+router.post(
+  '/forgot-password',
+  authLimiter,
+  body('email').trim().isEmail().withMessage('Please enter a valid email address.').normalizeEmail(),
+  validate,
+  asyncHandler(authController.forgotPassword)
+);
+router.post(
+  '/reset-password',
+  authLimiter,
+  body('token').isString().notEmpty(),
+  body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
+  validate,
+  asyncHandler(authController.resetPassword)
+);
+
 module.exports = router;

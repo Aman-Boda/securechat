@@ -264,6 +264,36 @@ a {
   font-size: 16px;
 }
 
+.verify-banner {
+  margin: 0 16px 12px;
+  padding: 8px 10px;
+  background: rgba(111, 168, 138, 0.12);
+  border: 1px solid rgba(111, 168, 138, 0.35);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.verify-banner button#resend-verification-btn {
+  background: none;
+  border: none;
+  color: var(--accent-strong);
+  font-size: 12.5px;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.verify-banner button#dismiss-verify-banner {
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 .sidebar-search {
   padding: 0 16px 12px;
   position: relative;

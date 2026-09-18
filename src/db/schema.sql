@@ -11,6 +11,18 @@ CREATE TABLE IF NOT EXISTS users (
   -- browser generates a key pair (happens automatically on first login) and
   -- uploads it. Public keys are, by definition, not secret.
   public_key    TEXT,
+  -- Email verification. Tokens are stored as SHA-256 hashes, never raw —
+  -- the raw token only ever exists in the emailed link itself.
+  email_verified              BOOLEAN NOT NULL DEFAULT false,
+  verification_token_hash     TEXT,
+  verification_token_expires  TIMESTAMPTZ,
+  -- Password reset, same hashing approach as verification.
+  reset_token_hash    TEXT,
+  reset_token_expires TIMESTAMPTZ,
+  -- Bumped whenever the password is reset, so any JWT issued before that
+  -- moment stops being accepted — this is what actually logs out a
+  -- possibly-compromised session when someone resets their password.
+  token_version INT NOT NULL DEFAULT 0,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -62,3 +74,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, create
 ALTER TABLE users ADD COLUMN IF NOT EXISTS public_key TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS iv TEXT;
 ALTER TABLE room_memberships ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_expires TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 0;

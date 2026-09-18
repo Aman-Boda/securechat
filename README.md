@@ -13,6 +13,7 @@ with security as a first-class concern rather than an afterthought.
 - Message history with infinite scroll (loads older messages as you scroll up)
 - Message editing and deletion (deleted messages leave a "Message deleted" tombstone, not a silent gap — and the content is actually cleared from the database, not just hidden)
 - Unread message badges, updated live
+- Email verification and password reset (via Resend — optional; the app works fine without it configured)
 - Search for people to start a conversation with
 - Browse and join public group rooms
 
@@ -122,6 +123,28 @@ data on the very first spin-down/spin-up cycle. Postgres is a real,
 separately-hosted database, so your data survives regardless of what happens
 to the web service itself.
 
+## Setting up email (optional)
+
+Without this, the app works fully except for two things: verification
+emails and password-reset emails don't actually send (they get logged to
+the console instead, which is fine for local development, but not for a
+real deployment). To enable real sending:
+
+1. Create a free account at [resend.com](https://resend.com) — 3,000
+   emails/month, no card required.
+2. Generate an API key from their dashboard.
+3. On Render, add `RESEND_API_KEY` to your web service's environment
+   variables (Environment tab → Add → paste the key). Saving triggers an
+   automatic redeploy.
+
+**One catch worth knowing:** until you verify your own sending domain with
+Resend, you can only send *to* the email address you signed up with —
+Resend's shared address (`onboarding@resend.dev`) is meant for testing, not
+for reaching arbitrary users. That's fine for trying this out solo, but if
+you want real users to receive real verification/reset emails, you'll need
+to verify a domain you own (Resend walks you through adding a couple of DNS
+records) and set `FROM_EMAIL` to an address on that domain.
+
 ## Project structure
 
 ```
@@ -164,6 +187,9 @@ public/
 - **Secrets** — read from `.env` only, never hardcoded; `.env` is gitignored. In production, secrets live in Render's environment variable store, not in the repo.
 - **Socket auth** — every socket connection must present the same session cookie as the REST API; there is no separate, weaker auth path for real-time events.
 - **Encrypted DB connections** — hosted Postgres connections use TLS (`sslmode=require`), so credentials and query data aren't sent in plaintext over the network between the app and the database.
+- **Verification/reset tokens** — stored as SHA-256 hashes, never raw; the raw token only ever exists in the emailed link itself, so reading the database can't yield a usable token. Both are single-use (cleared on success) and time-limited (24h for verification, 1h for reset).
+- **No account enumeration via password reset** — `/auth/forgot-password` returns the identical response whether or not the email exists, so it can't be used to check who has an account.
+- **Password reset invalidates other sessions** — every user has a `token_version` that's bumped on reset; a JWT issued before that moment stops being accepted (checked on every request and every socket connection), so if an account was compromised, resetting the password actually logs the attacker out too — not just the person who reset it.
 
 ### End-to-end encryption for DMs
 
@@ -231,6 +257,10 @@ cookie (the browser sends it automatically).
 | POST | `/auth/login` | Log in |
 | POST | `/auth/logout` | Clear the session |
 | GET | `/auth/me` | Current user |
+| POST | `/auth/verify-email` | Confirm an email address `{ token }` |
+| POST | `/auth/resend-verification` | Resend the verification email (authenticated) |
+| POST | `/auth/forgot-password` | Request a reset link `{ email }` — always responds the same way whether or not the email exists |
+| POST | `/auth/reset-password` | Set a new password `{ token, newPassword }` — logs out every other session on the account |
 | GET | `/users/search?q=` | Find users by username (includes their public key, if set) |
 | PUT | `/users/me/public-key` | Upload your E2EE public key `{ publicKey }` (JWK) — done automatically by the app on login |
 | GET | `/rooms` | Your rooms (DMs + groups), with previews |
@@ -265,7 +295,6 @@ cookie (the browser sends it automatically).
 
 ## Possible next steps
 
-- Email verification and password reset flow
 - Forward secrecy (rotate the derived key per-message, Signal-style, instead of one static key per conversation)
 - Multi-device support for encrypted DMs (currently: a new browser/device means a new key pair, and old encrypted messages can't be read there)
 - Group room encryption (harder — needs encrypting to multiple recipients and handling membership changes)

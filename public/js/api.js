@@ -29,6 +29,11 @@ export const api = {
   login: (payload) => apiFetch('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => apiFetch('/api/auth/logout', { method: 'POST' }),
   me: () => apiFetch('/api/auth/me'),
+  verifyEmail: (token) => apiFetch('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }),
+  resendVerification: () => apiFetch('/api/auth/resend-verification', { method: 'POST' }),
+  forgotPassword: (email) => apiFetch('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetPassword: (token, newPassword) =>
+    apiFetch('/api/auth/reset-password', { method: 'POST', body: JSON.stringify({ token, newPassword }) }),
   searchUsers: (q) => apiFetch(`/api/users/search?q=${encodeURIComponent(q)}`),
   uploadPublicKey: (publicKey) =>
     apiFetch('/api/users/me/public-key', { method: 'PUT', body: JSON.stringify({ publicKey }) }),

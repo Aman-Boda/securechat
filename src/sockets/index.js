@@ -72,6 +72,7 @@ function initSockets(io) {
       const payload = verifyToken(token);
       const user = await userRepo.findById(payload.sub);
       if (!user) return next(new Error('unauthorized'));
+      if (payload.tokenVersion !== user.token_version) return next(new Error('unauthorized'));
       socket.user = user;
       next();
     } catch {

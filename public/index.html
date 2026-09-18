@@ -35,7 +35,10 @@
           <input id="login-password" name="password" type="password" autocomplete="current-password" required />
         </div>
         <button type="submit" class="btn btn-primary" id="login-submit">Log in</button>
-        <p class="auth-switch">New here? <button type="button" id="show-register">Create an account</button></p>
+        <p class="auth-switch">
+          <button type="button" id="show-forgot-password">Forgot password?</button>
+          &middot; New here? <button type="button" id="show-register">Create an account</button>
+        </p>
       </form>
 
       <!-- Register -->
@@ -60,6 +63,33 @@
         <button type="submit" class="btn btn-primary" id="register-submit">Create account</button>
         <p class="auth-switch">Already have an account? <button type="button" id="show-login">Log in</button></p>
       </form>
+
+      <!-- Forgot password -->
+      <form id="forgot-password-form" class="hidden">
+        <h1 class="auth-heading">Reset your password</h1>
+        <p class="auth-subheading">We'll email you a link to set a new one.</p>
+        <div id="forgot-password-error" class="form-error hidden"></div>
+        <div id="forgot-password-success" class="hidden" style="font-size:13px; color:var(--accent-strong); margin-bottom:16px;"></div>
+        <div class="field">
+          <label for="forgot-password-email">Email</label>
+          <input id="forgot-password-email" name="email" type="email" autocomplete="email" required />
+        </div>
+        <button type="submit" class="btn btn-primary" id="forgot-password-submit">Send reset link</button>
+        <p class="auth-switch"><button type="button" id="show-login-from-forgot">Back to log in</button></p>
+      </form>
+
+      <!-- Reset password (shown when the page loads with ?reset=TOKEN) -->
+      <form id="reset-password-form" class="hidden">
+        <h1 class="auth-heading">Choose a new password</h1>
+        <p class="auth-subheading">Resetting your password will log out any other active sessions.</p>
+        <div id="reset-password-error" class="form-error hidden"></div>
+        <div class="field">
+          <label for="reset-password-new">New password</label>
+          <input id="reset-password-new" name="newPassword" type="password" autocomplete="new-password" minlength="8" required />
+          <div class="field-hint">At least 8 characters.</div>
+        </div>
+        <button type="submit" class="btn btn-primary" id="reset-password-submit">Set new password</button>
+      </form>
     </div>
   </div>
 
@@ -73,6 +103,11 @@
           </svg>
         </div>
         <span class="brand-name">SecureChat</span>
+      </div>
+
+      <div id="verify-banner" class="verify-banner hidden">
+        <span>Verify your email &mdash; <button type="button" id="resend-verification-btn">resend link</button></span>
+        <button type="button" id="dismiss-verify-banner" class="icon-btn" title="Dismiss">&times;</button>
       </div>
 
       <div class="sidebar-search">

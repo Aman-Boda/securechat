@@ -48,6 +48,53 @@ async function setPublicKey(id, publicKeyJwk) {
   await pool.query('UPDATE users SET public_key = $1 WHERE id = $2', [JSON.stringify(publicKeyJwk), id]);
 }
 
+async function setVerificationToken(userId, tokenHash, expiresAt) {
+  await pool.query(
+    'UPDATE users SET verification_token_hash = $1, verification_token_expires = $2 WHERE id = $3',
+    [tokenHash, expiresAt, userId]
+  );
+}
+
+// Finds a user by a non-expired verification token hash, marks them
+// verified, and clears the token so it can't be reused. Returns the user,
+// or null if the token doesn't match any pending, unexpired verification.
+async function verifyEmailByTokenHash(tokenHash) {
+  const result = await pool.query(
+    `UPDATE users
+     SET email_verified = true, verification_token_hash = NULL, verification_token_expires = NULL
+     WHERE verification_token_hash = $1 AND verification_token_expires > now()
+     RETURNING *`,
+    [tokenHash]
+  );
+  return result.rows[0] || null;
+}
+
+async function setResetToken(userId, tokenHash, expiresAt) {
+  await pool.query('UPDATE users SET reset_token_hash = $1, reset_token_expires = $2 WHERE id = $3', [
+    tokenHash,
+    expiresAt,
+    userId,
+  ]);
+}
+
+// Finds a user by a non-expired reset token hash, sets their new password,
+// clears the reset token, and bumps token_version — which is what
+// invalidates any session issued before this reset. Returns the user, or
+// null if the token doesn't match any pending, unexpired reset.
+async function resetPasswordByTokenHash(tokenHash, newPasswordHash) {
+  const result = await pool.query(
+    `UPDATE users
+     SET password_hash = $1,
+         reset_token_hash = NULL,
+         reset_token_expires = NULL,
+         token_version = token_version + 1
+     WHERE reset_token_hash = $2 AND reset_token_expires > now()
+     RETURNING *`,
+    [newPasswordHash, tokenHash]
+  );
+  return result.rows[0] || null;
+}
+
 function parsePublicKey(user) {
   if (!user || !user.public_key) return null;
   try {
@@ -83,6 +130,7 @@ function toPublic(user) {
     username: user.username,
     avatarColor: user.avatar_color,
     publicKey: parsePublicKey(user),
+    emailVerified: user.email_verified,
     createdAt: user.created_at,
     lastSeenAt: user.last_seen_at,
   };
@@ -95,6 +143,10 @@ module.exports = {
   findById,
   touchLastSeen,
   setPublicKey,
+  setVerificationToken,
+  verifyEmailByTokenHash,
+  setResetToken,
+  resetPasswordByTokenHash,
   searchUsers,
   toPublic,
 };

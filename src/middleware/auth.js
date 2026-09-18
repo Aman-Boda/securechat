@@ -22,6 +22,11 @@ const requireAuth = asyncHandler(async (req, res, next) => {
   if (!user) {
     return res.status(401).json({ error: 'Account no longer exists.' });
   }
+  // If the password was reset since this token was issued, token_version
+  // has moved on — this is what actually logs out a stolen/old session.
+  if (payload.tokenVersion !== user.token_version) {
+    return res.status(401).json({ error: 'Session expired or invalid. Please log in again.' });
+  }
 
   req.user = user;
   next();

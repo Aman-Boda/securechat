@@ -999,11 +999,62 @@ $('back-btn').addEventListener('click', () => $('app-screen').classList.remove('
 function switchAuthForm(which) {
   $('login-form').classList.toggle('hidden', which !== 'login');
   $('register-form').classList.toggle('hidden', which !== 'register');
+  $('forgot-password-form').classList.toggle('hidden', which !== 'forgot-password');
+  $('reset-password-form').classList.toggle('hidden', which !== 'reset-password');
   $('login-error').classList.add('hidden');
   $('register-error').classList.add('hidden');
+  $('forgot-password-error').classList.add('hidden');
+  $('forgot-password-success').classList.add('hidden');
+  $('reset-password-error').classList.add('hidden');
 }
 $('show-register').addEventListener('click', () => switchAuthForm('register'));
 $('show-login').addEventListener('click', () => switchAuthForm('login'));
+$('show-forgot-password').addEventListener('click', () => switchAuthForm('forgot-password'));
+$('show-login-from-forgot').addEventListener('click', () => switchAuthForm('login'));
+
+$('forgot-password-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const email = $('forgot-password-email').value.trim();
+  const btn = $('forgot-password-submit');
+  const errorEl = $('forgot-password-error');
+  const successEl = $('forgot-password-success');
+  errorEl.classList.add('hidden');
+  successEl.classList.add('hidden');
+  btn.disabled = true;
+  try {
+    const data = await api.forgotPassword(email);
+    successEl.textContent = data.message;
+    successEl.classList.remove('hidden');
+    $('forgot-password-form').reset();
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+let pendingResetToken = null;
+
+$('reset-password-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const newPassword = $('reset-password-new').value;
+  const btn = $('reset-password-submit');
+  const errorEl = $('reset-password-error');
+  errorEl.classList.add('hidden');
+  btn.disabled = true;
+  try {
+    const data = await api.resetPassword(pendingResetToken, newPassword);
+    pendingResetToken = null;
+    showToast('Password updated — you are now logged in.');
+    await initApp(data.user);
+  } catch (err) {
+    errorEl.textContent = err.message;
+    errorEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1066,6 +1117,8 @@ function showAuthScreen() {
   switchAuthForm('login');
   $('login-form').reset();
   $('register-form').reset();
+  $('forgot-password-form').reset();
+  $('reset-password-form').reset();
 }
 
 async function initApp(user) {
@@ -1075,6 +1128,7 @@ async function initApp(user) {
 
   applyAvatar($('me-avatar'), user.username, user.avatarColor);
   $('me-name').textContent = user.username;
+  updateVerifyBanner();
 
   try {
     await initializeEncryption();
@@ -1100,11 +1154,58 @@ async function initApp(user) {
   }
 }
 
+// Dismissal is per-session only (a plain JS variable, not persisted) — the
+// reminder comes back next time they open the app, since an unverified
+// email is a standing thing worth resurfacing, not a one-time nag.
+let verifyBannerDismissed = false;
+
+function updateVerifyBanner() {
+  const banner = $('verify-banner');
+  const shouldShow = state.me && !state.me.emailVerified && !verifyBannerDismissed;
+  banner.classList.toggle('hidden', !shouldShow);
+}
+
+$('resend-verification-btn').addEventListener('click', async () => {
+  try {
+    await api.resendVerification();
+    showToast('Verification email sent — check your inbox.');
+  } catch (err) {
+    showToast(err.message);
+  }
+});
+
+$('dismiss-verify-banner').addEventListener('click', () => {
+  verifyBannerDismissed = true;
+  updateVerifyBanner();
+});
+
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
 (async function bootstrap() {
+  const params = new URLSearchParams(window.location.search);
+  const verifyToken = params.get('verify');
+  const resetToken = params.get('reset');
+
+  if (verifyToken) {
+    window.history.replaceState({}, '', window.location.pathname);
+    try {
+      await api.verifyEmail(verifyToken);
+      showToast('Email verified!');
+    } catch (err) {
+      showToast(err.message);
+    }
+  }
+
+  if (resetToken) {
+    window.history.replaceState({}, '', window.location.pathname);
+    pendingResetToken = resetToken;
+    showAuthScreen();
+    switchAuthForm('reset-password');
+    return; // let them set a new password rather than auto-continuing any existing session
+  }
+
   try {
     const data = await api.me();
     await initApp(data.user);
