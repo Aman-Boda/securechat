@@ -1,6 +1,16 @@
 import { api } from './api.js';
 import { connectSocket, onSocket, emitSocket, disconnectSocket } from './socket.js';
-import { getOrCreateKeyPair, exportPublicKeyJwk, deriveSharedKey, encryptText, decryptText, computeSafetyNumber } from './crypto.js';
+import {
+  getOrCreateKeyPair,
+  exportPublicKeyJwk,
+  deriveSharedKey,
+  encryptText,
+  decryptText,
+  computeSafetyNumber,
+  currentEpochIndex,
+  getOrCreateCurrentEpochKeyPair,
+  getEphemeralPrivateKeyForEpoch,
+} from './crypto.js';
 
 const state = {
   me: null,
@@ -11,7 +21,9 @@ const state = {
   onlineUsers: new Set(),
   myKeyPair: null, // { publicKey, privateKey } CryptoKey objects, this browser's E2EE identity
   myPublicKeyJwk: null,
-  sharedKeys: new Map(), // roomId -> derived AES-GCM CryptoKey, for DM rooms only
+  derivedKeyCache: new Map(), // composite key -> derived AES-GCM CryptoKey, avoids re-deriving per message
+  theirEpochKeyCache: new Map(), // "userId:epochIndex" -> their published epoch public key JWK (positive hits only)
+  publishedEpochIndex: null, // which epoch we've already told the server our current ephemeral public key for
   roomPagination: new Map(), // roomId -> { hasMore: boolean, loading: boolean }
 };
 
@@ -95,24 +107,97 @@ async function initializeEncryption() {
   }
 }
 
-// Derives (and caches) the AES-GCM key shared with a DM partner. Returns
-// null for group rooms, or if the other person hasn't generated a key yet
-// (extremely rare in practice — key upload happens automatically moments
-// after their first login, before they'd typically be searchable/messageable).
-async function getSharedKeyForRoom(roomId) {
-  if (state.sharedKeys.has(roomId)) return state.sharedKeys.get(roomId);
+// Publishes our ephemeral public key for the CURRENT epoch, but only once
+// per epoch per session — the server upsert is idempotent anyway, this just
+// avoids a redundant network call on every message.
+async function ensureEpochKeyPublished() {
+  const { epochIndex, pair } = await getOrCreateCurrentEpochKeyPair();
+  if (state.publishedEpochIndex !== epochIndex) {
+    try {
+      const publicJwk = await exportPublicKeyJwk(pair.publicKey);
+      await api.publishEpochKey(epochIndex, publicJwk);
+      state.publishedEpochIndex = epochIndex;
+    } catch (err) {
+      console.error('Failed to publish ephemeral epoch key — will retry next send:', err);
+    }
+  }
+  return { epochIndex, pair };
+}
 
-  const room = state.rooms.find((r) => r.id === roomId);
-  if (!room || room.isGroup || !room.otherMember?.publicKey || !state.myKeyPair) return null;
-
+// Looks up (and caches positive results for) a DM partner's published
+// epoch key. A null result isn't cached long-term — they may publish one
+// moments later, so we just ask again next time rather than remembering
+// "no key" for the rest of the epoch.
+async function fetchTheirEpochKey(userId, epochIndex) {
+  const cacheKey = `${userId}:${epochIndex}`;
+  if (state.theirEpochKeyCache.has(cacheKey)) return state.theirEpochKeyCache.get(cacheKey);
   try {
-    const key = await deriveSharedKey(state.myKeyPair.privateKey, room.otherMember.publicKey);
-    state.sharedKeys.set(roomId, key);
-    return key;
-  } catch (err) {
-    console.warn('Failed to derive shared key for room', roomId, err);
+    const data = await api.getEpochKey(userId, epochIndex);
+    if (data.publicKey) state.theirEpochKeyCache.set(cacheKey, data.publicKey);
+    return data.publicKey;
+  } catch {
     return null;
   }
+}
+
+async function getCachedDerivedKey(cacheKey, myKey, theirJwk) {
+  let key = state.derivedKeyCache.get(cacheKey);
+  if (!key) {
+    key = await deriveSharedKey(myKey, theirJwk);
+    state.derivedKeyCache.set(cacheKey, key);
+  }
+  return key;
+}
+
+// Prepares everything needed to send an encrypted DM: our fresh ephemeral
+// key for this epoch, the strongest key we can derive with the recipient
+// (mutual-ephemeral if they've published one this epoch, their static
+// identity key as a fallback otherwise), and the resulting ciphertext.
+// Returns null only if we have no usable key for them at all.
+async function prepareEncryptedPayload(room, plaintext) {
+  const { epochIndex, pair: myEphPair } = await ensureEpochKeyPublished();
+  const myEphPublicJwk = await exportPublicKeyJwk(myEphPair.publicKey);
+
+  let theirKey = null;
+  let keyMode = null;
+  if (room.otherMember?.id) {
+    theirKey = await fetchTheirEpochKey(room.otherMember.id, epochIndex);
+  }
+  if (theirKey) {
+    keyMode = 'mutual';
+  } else if (room.otherMember?.publicKey) {
+    theirKey = room.otherMember.publicKey;
+    keyMode = 'identity';
+  } else {
+    return null;
+  }
+
+  const cacheKey = `send:${epochIndex}:${keyMode}:${theirKey.x}:${theirKey.y}`;
+  const sharedKey = await getCachedDerivedKey(cacheKey, myEphPair.privateKey, theirKey);
+  const { ciphertext, iv } = await encryptText(sharedKey, plaintext);
+  return { content: ciphertext, iv, epochIndex, senderEpochPublicKey: myEphPublicJwk, keyMode };
+}
+
+// Decrypts a received DM. 'mutual' messages need OUR ephemeral private key
+// for that specific epoch — if it's aged out of local retention, this
+// returns null, which is forward secrecy doing exactly what it's for, not
+// a bug. 'identity' messages use our long-term identity key, which is
+// always available.
+async function decryptIncomingDm(msg) {
+  let myKey;
+  if (msg.keyMode === 'mutual') {
+    myKey = await getEphemeralPrivateKeyForEpoch(msg.epochIndex);
+    if (!myKey) return null;
+  } else if (msg.keyMode === 'identity') {
+    if (!state.myKeyPair) return null;
+    myKey = state.myKeyPair.privateKey;
+  } else {
+    return null;
+  }
+
+  const cacheKey = `recv:${msg.epochIndex}:${msg.keyMode}:${msg.senderEpochPublicKey.x}:${msg.senderEpochPublicKey.y}`;
+  const sharedKey = await getCachedDerivedKey(cacheKey, myKey, msg.senderEpochPublicKey);
+  return decryptText(sharedKey, msg.content, msg.iv);
 }
 
 // Adds a `displayContent` field for rendering, without touching the
@@ -122,12 +207,27 @@ async function decorateWithDisplayContent(msg) {
   if (!msg.iv) {
     return { ...msg, displayContent: msg.content };
   }
-  const sharedKey = await getSharedKeyForRoom(msg.roomId);
-  if (!sharedKey) {
-    return { ...msg, displayContent: '🔒 Encrypted message (key not available yet)' };
+
+  let plaintext = null;
+  if (msg.epochIndex !== null && msg.epochIndex !== undefined && msg.keyMode && msg.senderEpochPublicKey) {
+    plaintext = await decryptIncomingDm(msg);
+  } else {
+    // A message sent before forward secrecy shipped, under the old
+    // static identity-to-identity scheme — kept decryptable for continuity.
+    const room = state.rooms.find((r) => r.id === msg.roomId);
+    if (room && !room.isGroup && room.otherMember?.publicKey && state.myKeyPair) {
+      const legacyKey = await getCachedDerivedKey(
+        `legacy:${room.id}`,
+        state.myKeyPair.privateKey,
+        room.otherMember.publicKey
+      );
+      plaintext = await decryptText(legacyKey, msg.content, msg.iv);
+    }
   }
-  const plaintext = await decryptText(sharedKey, msg.content, msg.iv);
-  return { ...msg, displayContent: plaintext ?? '⚠️ Could not decrypt this message' };
+
+  const fallbackText =
+    msg.keyMode === 'mutual' ? '🔒 Key has aged out — no longer decryptable on this device' : '⚠️ Could not decrypt this message';
+  return { ...msg, displayContent: plaintext ?? fallbackText };
 }
 
 function showSafetyNumberModal(username, code) {
@@ -457,14 +557,13 @@ function enterEditMode(msg, row) {
     let payload = { roomId: msg.roomId, messageId: msg.id, content: newContent };
     const room = state.rooms.find((r) => r.id === msg.roomId);
     if (room && !room.isGroup) {
-      const sharedKey = await getSharedKeyForRoom(msg.roomId);
-      if (!sharedKey) {
+      const encrypted = await prepareEncryptedPayload(room, newContent);
+      if (!encrypted) {
         showToast('Cannot edit — secure messaging is not ready for this conversation.');
         saveBtn.disabled = false;
         return;
       }
-      const encrypted = await encryptText(sharedKey, newContent);
-      payload = { roomId: msg.roomId, messageId: msg.id, content: encrypted.ciphertext, iv: encrypted.iv };
+      payload = { roomId: msg.roomId, messageId: msg.id, ...encrypted };
     }
 
     emitSocket('message:edit', payload, (res) => {
@@ -968,13 +1067,12 @@ composerForm.addEventListener('submit', async (e) => {
   let payload = { roomId, content };
 
   if (room && !room.isGroup) {
-    const sharedKey = await getSharedKeyForRoom(roomId);
-    if (!sharedKey) {
+    const encrypted = await prepareEncryptedPayload(room, content);
+    if (!encrypted) {
       showToast('Cannot send yet — secure messaging is not ready for this conversation.');
       return;
     }
-    const { ciphertext, iv } = await encryptText(sharedKey, content);
-    payload = { roomId, content: ciphertext, iv };
+    payload = { roomId, ...encrypted };
   }
 
   emitSocket('message:send', payload, (res) => {

@@ -12,30 +12,50 @@ async function history(req, res) {
   return res.json({ messages });
 }
 
+// Validates the forward-secrecy fields a DM send/edit must carry. The
+// server never derives or checks the KEY itself (it can't — that's the
+// point), only that the shape is sane: a real epoch index, ciphertext, an
+// iv, the sender's one-time public key for that epoch, and which of the
+// recipient's keys it claims to be paired with.
+function validateEncryptedPayload(body) {
+  const { content, iv, epochIndex, senderEpochPublicKey, keyMode } = body;
+  if (!iv || typeof content !== 'string' || !content) {
+    return { error: 'Direct messages must be sent encrypted (missing iv/content).' };
+  }
+  if (content.length > MAX_CIPHERTEXT_LENGTH) {
+    return { error: 'Message too large.' };
+  }
+  if (!Number.isInteger(epochIndex) || epochIndex < 0) {
+    return { error: 'epochIndex is required for encrypted messages.' };
+  }
+  if (!senderEpochPublicKey || typeof senderEpochPublicKey !== 'object') {
+    return { error: 'senderEpochPublicKey is required for encrypted messages.' };
+  }
+  if (keyMode !== 'mutual' && keyMode !== 'identity') {
+    return { error: "keyMode must be 'mutual' or 'identity'." };
+  }
+  return { content, iv, epochIndex, senderEpochPublicKey, keyMode };
+}
+
 // REST fallback for sending a message (the primary path is the Socket.io
 // "message:send" event — see src/sockets/index.js). Kept so the API works
 // for simple HTTP clients too, and both paths share the same rules.
 //
-// Direct messages are ALWAYS end-to-end encrypted: the server requires an
-// `iv` for any non-group room. Group rooms are not encrypted in this
-// version, so their content is sanitized server-side the same way it
-// always was.
+// Direct messages are ALWAYS end-to-end encrypted, with forward secrecy:
+// the server requires a full encrypted payload for any non-group room.
+// Group rooms are not encrypted in this version, so their content is
+// sanitized server-side the same way it always was.
 async function send(req, res) {
-  const { content, iv } = req.body;
-
   if (!req.room.is_group) {
-    if (!iv || typeof content !== 'string' || !content) {
-      return res.status(400).json({ error: 'Direct messages must be sent encrypted (missing iv/content).' });
-    }
-    if (content.length > MAX_CIPHERTEXT_LENGTH) {
-      return res.status(400).json({ error: 'Message too large.' });
-    }
-    const message = await messageRepo.createMessage({ content, iv, senderId: req.user.id, roomId: req.room.id });
+    const parsed = validateEncryptedPayload(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+    const message = await messageRepo.createMessage({ ...parsed, senderId: req.user.id, roomId: req.room.id });
     req.app.get('io').to(`room:${req.room.id}`).emit('message:new', message);
     return res.status(201).json({ message });
   }
 
-  const clean = sanitizeMessageContent(content);
+  const clean = sanitizeMessageContent(req.body.content);
   if (!clean) {
     return res.status(400).json({ error: 'Message cannot be empty.' });
   }
@@ -66,19 +86,13 @@ async function edit(req, res) {
     return res.status(400).json({ error: 'Cannot edit a deleted message.' });
   }
 
-  const { content, iv } = req.body;
   let updated;
-
   if (!req.room.is_group) {
-    if (!iv || typeof content !== 'string' || !content) {
-      return res.status(400).json({ error: 'Direct messages must be sent encrypted (missing iv/content).' });
-    }
-    if (content.length > MAX_CIPHERTEXT_LENGTH) {
-      return res.status(400).json({ error: 'Message too large.' });
-    }
-    updated = await messageRepo.updateMessage(message.id, { content, iv });
+    const parsed = validateEncryptedPayload(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    updated = await messageRepo.updateMessage(message.id, parsed);
   } else {
-    const clean = sanitizeMessageContent(content);
+    const clean = sanitizeMessageContent(req.body.content);
     if (!clean) return res.status(400).json({ error: 'Message cannot be empty.' });
     updated = await messageRepo.updateMessage(message.id, { content: clean });
   }

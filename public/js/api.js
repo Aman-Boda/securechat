@@ -37,6 +37,9 @@ export const api = {
   searchUsers: (q) => apiFetch(`/api/users/search?q=${encodeURIComponent(q)}`),
   uploadPublicKey: (publicKey) =>
     apiFetch('/api/users/me/public-key', { method: 'PUT', body: JSON.stringify({ publicKey }) }),
+  publishEpochKey: (epochIndex, publicKey) =>
+    apiFetch('/api/users/me/epoch-key', { method: 'PUT', body: JSON.stringify({ epochIndex, publicKey }) }),
+  getEpochKey: (userId, epochIndex) => apiFetch(`/api/users/${userId}/epoch-key/${epochIndex}`),
   listRooms: () => apiFetch('/api/rooms'),
   listJoinableRooms: () => apiFetch('/api/rooms/joinable'),
   createGroup: (name) => apiFetch('/api/rooms/group', { method: 'POST', body: JSON.stringify({ name }) }),

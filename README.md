@@ -6,7 +6,7 @@ with security as a first-class concern rather than an afterthought.
 ## Features
 
 - Register / log in / log out
-- Direct messages (1-on-1), **end-to-end encrypted**, and group rooms (not encrypted — see below)
+- Direct messages (1-on-1), **end-to-end encrypted with forward secrecy**, and group rooms (not encrypted — see below)
 - Real-time delivery over WebSockets (Socket.io)
 - Typing indicators
 - Online / offline presence with "last seen"
@@ -191,39 +191,61 @@ public/
 - **No account enumeration via password reset** — `/auth/forgot-password` returns the identical response whether or not the email exists, so it can't be used to check who has an account.
 - **Password reset invalidates other sessions** — every user has a `token_version` that's bumped on reset; a JWT issued before that moment stops being accepted (checked on every request and every socket connection), so if an account was compromised, resetting the password actually logs the attacker out too — not just the person who reset it.
 
-### End-to-end encryption for DMs
+### End-to-end encryption for DMs, with forward secrecy
 
 Direct messages are genuinely end-to-end encrypted — the server stores and
 relays ciphertext it cannot itself decrypt, and this is enforced server-side
 (a DM message arriving without encryption is rejected with a 400, not just
 "usually" encrypted by client convention).
 
-**How it works:** each browser generates its own ECDH (P-256) key pair the
-first time you log in. The private key is stored in that browser's
-IndexedDB and never transmitted anywhere. The public key is uploaded to the
-server so others can find it. To message someone, your browser combines
-your private key with their public key (ECDH) to derive a shared AES-256-GCM
-key; they derive the exact same key independently using their private key
-and your public key. This was confirmed with a full round-trip test: two
-independent identities generated real keys, exchanged them only through the
-live API, sent a real encrypted message over a real socket connection, and
-decrypted it independently — while checking that the plaintext never once
-appeared anywhere the server stores or returns data.
+**Long-term identity:** each browser generates its own ECDH (P-256) key pair
+the first time you log in. The private key stays in that browser's IndexedDB,
+never transmitted. The public key is uploaded so others can find you.
+
+**Forward secrecy — why it exists:** a naive scheme that always encrypts
+with your identity key means one stolen key exposes your *entire* message
+history, forever. To avoid that, each browser also generates a fresh,
+one-time **ephemeral** key pair for the current hour-long "epoch" and
+publishes just the public half. When sending, if the recipient has
+published an epoch key too, both sides derive the message key from an
+**ephemeral-to-ephemeral** exchange — neither person's long-term identity
+key is involved in that derivation at all. The ephemeral private key is
+held only briefly (the current epoch plus two prior, for catch-up if you
+were briefly offline) and then genuinely **deleted** — confirmed with a
+dedicated test that simulates time passing and checks the key is actually
+gone, not just unused. Steal the identity key later, and those messages
+stay unreadable, because the key that protected them no longer exists
+anywhere.
+
+**The fallback case:** if the recipient hasn't published an epoch key (they
+simply weren't active that hour), the sender falls back to combining their
+own fresh ephemeral key with the recipient's *static* identity key instead
+of blocking the send. This is weaker — a message received this way isn't
+protected against a later identity-key compromise — but it means sending
+never has to wait on the other person being online. Each message carries
+which mode it used (`mutual` or `identity`), so decryption always knows
+which of the recipient's keys to reach for.
+
+This whole protocol — identity keys, ephemeral epoch keys, both the mutual
+and fallback derivation paths, and the actual deletion behavior — was
+verified with real cryptography against the live server and socket
+connections, not just unit-level math.
 
 **Verifying it's really them — the safety number:** encryption alone
 doesn't stop a *server* that's actively lying about someone's public key
 (a "man in the middle"). Click the 🔒 in a DM's header to see a safety
-number derived from both public keys. If you and the other person read it
-to each other over a different channel (a phone call, in person) and it
-matches, you've confirmed the server gave you their real key.
+number derived from both people's long-term identity keys. If you and the
+other person read it to each other over a different channel (a phone call,
+in person) and it matches, you've confirmed the server gave you their real
+key.
 
 **Known, deliberate limitations** (stated plainly rather than glossed over):
-- **No forward secrecy.** This uses one static derived key per conversation,
-  not a rotating per-message key like Signal's Double Ratchet. If a private
-  key is ever compromised, past messages become decryptable.
-- **Single-device.** The private key lives in one browser's storage. Logging
-  in on a different browser/device generates a new key pair, and old
-  messages encrypted for the old key become unreadable there.
+- **Single-device.** Keys live in one browser's storage. Logging in on a
+  different browser/device generates new keys, and old messages encrypted
+  under the old ones become unreadable there.
+- **The identity-fallback path doesn't get the forward-secrecy guarantee.**
+  Only mutual-ephemeral messages are protected against a later identity-key
+  compromise; fallback messages you *received* are not.
 - **Group rooms are not encrypted** in this version — group E2EE (encrypting
   to multiple recipients, handling membership changes) is a meaningfully
   bigger undertaking than 1-to-1, and is listed under "Possible next steps."
@@ -262,7 +284,9 @@ cookie (the browser sends it automatically).
 | POST | `/auth/forgot-password` | Request a reset link `{ email }` — always responds the same way whether or not the email exists |
 | POST | `/auth/reset-password` | Set a new password `{ token, newPassword }` — logs out every other session on the account |
 | GET | `/users/search?q=` | Find users by username (includes their public key, if set) |
-| PUT | `/users/me/public-key` | Upload your E2EE public key `{ publicKey }` (JWK) — done automatically by the app on login |
+| PUT | `/users/me/public-key` | Upload your long-term E2EE identity public key `{ publicKey }` (JWK) — done automatically by the app on login |
+| PUT | `/users/me/epoch-key` | Publish your one-time ephemeral public key for an hour `{ epochIndex, publicKey }` — done automatically before sending, for forward secrecy |
+| GET | `/users/:userId/epoch-key/:epochIndex` | Fetch someone's published epoch key, if any (`{ publicKey: null }` if they weren't active that hour — not an error) |
 | GET | `/rooms` | Your rooms (DMs + groups), with previews |
 | GET | `/rooms/joinable` | Group rooms you haven't joined |
 | POST | `/rooms/group` | Create a group room `{ name }` |
@@ -280,7 +304,7 @@ cookie (the browser sends it automatically).
 
 | Direction | Event | Payload |
 |---|---|---|
-| emit | `message:send` | `{ roomId, content }` for group rooms, `{ roomId, content, iv }` for DMs (required — see E2EE section) → ack `{ message }` or `{ error }` |
+| emit | `message:send` | `{ roomId, content }` for group rooms; for DMs, `{ roomId, content, iv, epochIndex, senderEpochPublicKey, keyMode }` (all required — see E2EE section) → ack `{ message }` or `{ error }` |
 | emit | `message:edit` | `{ roomId, messageId, content, iv? }` → ack `{ message }` or `{ error }` |
 | emit | `message:delete` | `{ roomId, messageId }` → ack `{ ok: true }` or `{ error }` |
 | emit | `room:read` | `{ roomId }` — marks the room read, no ack |
@@ -295,7 +319,7 @@ cookie (the browser sends it automatically).
 
 ## Possible next steps
 
-- Forward secrecy (rotate the derived key per-message, Signal-style, instead of one static key per conversation)
-- Multi-device support for encrypted DMs (currently: a new browser/device means a new key pair, and old encrypted messages can't be read there)
+- Forward secrecy for the identity-fallback path too (currently only mutual-ephemeral messages get it — see the E2EE section above)
+- Multi-device support for encrypted DMs (currently: a new browser/device means new keys, and old encrypted messages can't be read there)
 - Group room encryption (harder — needs encrypting to multiple recipients and handling membership changes)
 - Cross-tab unread sync (right now, reading on one open tab doesn't clear the badge on another tab of the same account until it re-fetches)

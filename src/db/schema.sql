@@ -65,6 +65,19 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at);
 
+-- Ephemeral, per-epoch public keys for forward secrecy. Each row is a
+-- user's one-time ephemeral public key for a specific hour-long epoch.
+-- The matching PRIVATE key lives only in that user's browser (IndexedDB),
+-- never here, and is deleted client-side once it ages out — this table
+-- only ever holds public material.
+CREATE TABLE IF NOT EXISTS epoch_keys (
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  epoch_index BIGINT NOT NULL,
+  public_key  TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, epoch_index)
+);
+
 -- Migration safety net: if this schema is being applied to a database that
 -- was already created by an earlier version of the app (before public_key
 -- and iv existed), CREATE TABLE IF NOT EXISTS above is a no-op on the
@@ -80,3 +93,10 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token_expires TIMESTAMPT
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 0;
+-- Forward secrecy: the sender's one-time ephemeral public key for the
+-- message's epoch, and which of the recipient's keys it was combined with
+-- ('mutual' = recipient's own ephemeral epoch key, the strong case;
+-- 'identity' = recipient's static identity key, the fallback case).
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_epoch_public_key TEXT;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS key_mode TEXT;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS epoch_index BIGINT;

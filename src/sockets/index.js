@@ -102,7 +102,7 @@ function initSockets(io) {
       if (roomId) socket.leave(`room:${roomId}`);
     });
 
-    socket.on('message:send', async ({ roomId, content, iv } = {}, ack) => {
+    socket.on('message:send', async ({ roomId, content, iv, epochIndex, senderEpochPublicKey, keyMode } = {}, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
       try {
         if (!roomId) return reply({ error: 'roomId is required.' });
@@ -116,16 +116,33 @@ function initSockets(io) {
 
         let message;
         if (!room.is_group) {
-          // Direct messages are always end-to-end encrypted. The server
-          // never sees plaintext for a DM — it stores and relays ciphertext
-          // it cannot itself decrypt.
+          // Direct messages are always end-to-end encrypted, with forward
+          // secrecy: the server never sees plaintext, and never derives or
+          // checks the key itself — only that the shape is sane.
           if (!iv || typeof content !== 'string' || !content) {
             return reply({ error: 'Direct messages must be sent encrypted.' });
           }
           if (content.length > MAX_CIPHERTEXT_LENGTH) {
             return reply({ error: 'Message too large.' });
           }
-          message = await messageRepo.createMessage({ content, iv, senderId: user.id, roomId });
+          if (!Number.isInteger(epochIndex) || epochIndex < 0) {
+            return reply({ error: 'epochIndex is required for encrypted messages.' });
+          }
+          if (!senderEpochPublicKey || typeof senderEpochPublicKey !== 'object') {
+            return reply({ error: 'senderEpochPublicKey is required for encrypted messages.' });
+          }
+          if (keyMode !== 'mutual' && keyMode !== 'identity') {
+            return reply({ error: "keyMode must be 'mutual' or 'identity'." });
+          }
+          message = await messageRepo.createMessage({
+            content,
+            iv,
+            epochIndex,
+            senderEpochPublicKey,
+            keyMode,
+            senderId: user.id,
+            roomId,
+          });
         } else {
           const clean = sanitizeMessageContent(content);
           if (!clean) return reply({ error: 'Message cannot be empty.' });
@@ -140,7 +157,7 @@ function initSockets(io) {
       }
     });
 
-    socket.on('message:edit', async ({ roomId, messageId, content, iv } = {}, ack) => {
+    socket.on('message:edit', async ({ roomId, messageId, content, iv, epochIndex, senderEpochPublicKey, keyMode } = {}, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
       try {
         if (!roomId || !messageId) return reply({ error: 'roomId and messageId are required.' });
@@ -159,7 +176,16 @@ function initSockets(io) {
             return reply({ error: 'Direct messages must be sent encrypted.' });
           }
           if (content.length > MAX_CIPHERTEXT_LENGTH) return reply({ error: 'Message too large.' });
-          updated = await messageRepo.updateMessage(messageId, { content, iv });
+          if (!Number.isInteger(epochIndex) || epochIndex < 0) {
+            return reply({ error: 'epochIndex is required for encrypted messages.' });
+          }
+          if (!senderEpochPublicKey || typeof senderEpochPublicKey !== 'object') {
+            return reply({ error: 'senderEpochPublicKey is required for encrypted messages.' });
+          }
+          if (keyMode !== 'mutual' && keyMode !== 'identity') {
+            return reply({ error: "keyMode must be 'mutual' or 'identity'." });
+          }
+          updated = await messageRepo.updateMessage(messageId, { content, iv, epochIndex, senderEpochPublicKey, keyMode });
         } else {
           const clean = sanitizeMessageContent(content);
           if (!clean) return reply({ error: 'Message cannot be empty.' });

@@ -9,5 +9,7 @@ router.use(requireAuth, apiLimiter);
 
 router.get('/search', asyncHandler(userController.search));
 router.put('/me/public-key', asyncHandler(userController.setPublicKey));
+router.put('/me/epoch-key', asyncHandler(userController.setEpochKey));
+router.get('/:userId/epoch-key/:epochIndex', asyncHandler(userController.getEpochKey));
 
 module.exports = router;
