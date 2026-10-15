@@ -40,6 +40,10 @@ export const api = {
   publishEpochKey: (epochIndex, publicKey) =>
     apiFetch('/api/users/me/epoch-key', { method: 'PUT', body: JSON.stringify({ epochIndex, publicKey }) }),
   getEpochKey: (userId, epochIndex) => apiFetch(`/api/users/${userId}/epoch-key/${epochIndex}`),
+  setSecurityMode: (securityMode) =>
+    apiFetch('/api/users/me/security-mode', { method: 'PUT', body: JSON.stringify({ securityMode }) }),
+  setKeyBackup: (backup) => apiFetch('/api/users/me/key-backup', { method: 'PUT', body: JSON.stringify(backup) }),
+  getKeyBackup: () => apiFetch('/api/users/me/key-backup'),
   listRooms: () => apiFetch('/api/rooms'),
   listJoinableRooms: () => apiFetch('/api/rooms/joinable'),
   createGroup: (name) => apiFetch('/api/rooms/group', { method: 'POST', body: JSON.stringify({ name }) }),

@@ -100,3 +100,23 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS sender_epoch_public_key TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS key_mode TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS epoch_index BIGINT;
+-- Per-account security posture, chosen at signup:
+-- 'standard' = ephemeral keys are never pruned, so history stays readable
+--   forever and a password-encrypted backup can restore full history to a
+--   new device. No forward-secrecy guarantee.
+-- 'strict'   = ephemeral keys are pruned after 30 days: genuine forward
+--   secrecy, at the cost of old messages eventually becoming unreadable
+--   and no full-history device transfer.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS security_mode TEXT NOT NULL DEFAULT 'standard';
+
+-- An opaque, password-encrypted backup of a user's local keys (identity +
+-- retained ephemeral keys), letting them restore message-decryption
+-- ability on a new device. The server only ever stores ciphertext: it
+-- never sees the backup password or anything it can decrypt with.
+CREATE TABLE IF NOT EXISTS key_backups (
+  user_id    TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  ciphertext TEXT NOT NULL,
+  salt       TEXT NOT NULL,
+  iv         TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

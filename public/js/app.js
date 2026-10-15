@@ -10,6 +10,8 @@ import {
   currentEpochIndex,
   getOrCreateCurrentEpochKeyPair,
   getEphemeralPrivateKeyForEpoch,
+  createEncryptedBackup,
+  restoreFromEncryptedBackup,
 } from './crypto.js';
 
 const state = {
@@ -111,7 +113,7 @@ async function initializeEncryption() {
 // per epoch per session — the server upsert is idempotent anyway, this just
 // avoids a redundant network call on every message.
 async function ensureEpochKeyPublished() {
-  const { epochIndex, pair } = await getOrCreateCurrentEpochKeyPair();
+  const { epochIndex, pair } = await getOrCreateCurrentEpochKeyPair(state.me?.securityMode);
   if (state.publishedEpochIndex !== epochIndex) {
     try {
       const publicJwk = await exportPublicKeyJwk(pair.publicKey);
@@ -230,9 +232,10 @@ async function decorateWithDisplayContent(msg) {
   return { ...msg, displayContent: plaintext ?? fallbackText };
 }
 
-function showSafetyNumberModal(username, code) {
+function showSafetyNumberModal(username, code, fsNote = '') {
   $('safety-number-username').textContent = username;
   $('safety-number-code').textContent = code;
+  $('safety-number-fs-note').textContent = fsNote;
   openModal('safety-number-modal');
 }
 
@@ -863,7 +866,11 @@ $('encryption-badge').addEventListener('click', async () => {
   if (!room || room.isGroup || !room.otherMember?.publicKey || !state.myPublicKeyJwk) return;
   try {
     const code = await computeSafetyNumber(state.me.id, state.myPublicKeyJwk, room.otherMember.id, room.otherMember.publicKey);
-    showSafetyNumberModal(room.otherMember.username, code);
+    const bothStrict = state.me.securityMode === 'strict' && room.otherMember.securityMode === 'strict';
+    const fsNote = bothStrict
+      ? 'Both of you use Maximum Security, so message keys are deleted after 30 days. (Messages sent while one of you had been inactive that hour use a weaker fallback.)'
+      : 'Forward secrecy is OFF for this conversation. At least one of you uses Standard mode and keeps keys permanently, so old messages stay readable and recoverable. A conversation is only as strict as the less strict person.';
+    showSafetyNumberModal(room.otherMember.username, code, fsNote);
   } catch (err) {
     showToast('Could not compute the safety number.');
   }
@@ -1183,7 +1190,8 @@ $('register-form').addEventListener('submit', async (e) => {
   errorEl.classList.add('hidden');
   btn.disabled = true;
   try {
-    const data = await api.register({ username, email, password });
+    const securityMode = document.querySelector('input[name="securityMode"]:checked')?.value || 'standard';
+    const data = await api.register({ username, email, password, securityMode });
     await initApp(data.user);
   } catch (err) {
     errorEl.textContent = err.message;
@@ -1276,6 +1284,113 @@ $('dismiss-verify-banner').addEventListener('click', () => {
   verifyBannerDismissed = true;
   updateVerifyBanner();
 });
+
+// ---------------------------------------------------------------------------
+// Security settings: mode switching + key backup / restore
+// ---------------------------------------------------------------------------
+
+function describeSecurityMode(mode) {
+  return mode === 'strict'
+    ? 'Maximum Security: real forward secrecy. Keys older than 30 days are permanently deleted, so very old messages become unreadable, even to you. Full-history device transfer is not possible.'
+    : 'Standard: your message history stays readable forever, and a backup password lets you restore it on a new device. No forward-secrecy guarantee.';
+}
+
+function renderSettingsModal() {
+  const mode = state.me?.securityMode || 'standard';
+  $('settings-mode-description').textContent = describeSecurityMode(mode);
+  $('settings-switch-mode-btn').textContent = mode === 'strict' ? 'Switch to Standard' : 'Switch to Maximum Security';
+  const note = $('settings-backup-scope-note');
+  note.textContent =
+    'On Maximum Security a backup only covers the last 30 days; older keys are already permanently deleted from this device.';
+  note.classList.toggle('hidden', mode !== 'strict');
+}
+
+$('settings-btn').addEventListener('click', () => {
+  renderSettingsModal();
+  openModal('settings-modal');
+});
+
+$('settings-switch-mode-btn').addEventListener('click', async () => {
+  const next = (state.me.securityMode || 'standard') === 'strict' ? 'standard' : 'strict';
+  if (next === 'strict') {
+    const ok = window.confirm(
+      'Switch to Maximum Security? From now on, keys older than 30 days will be permanently deleted from this device, so old messages can eventually become unreadable. Messages that age out cannot be recovered.'
+    );
+    if (!ok) return;
+  }
+  try {
+    await api.setSecurityMode(next);
+    state.me.securityMode = next;
+    renderSettingsModal();
+    showToast(`Switched to ${next === 'strict' ? 'Maximum Security' : 'Standard'} mode.`);
+  } catch (err) {
+    showToast(err.message);
+  }
+});
+
+$('create-backup-btn').addEventListener('click', async () => {
+  const password = $('backup-password').value;
+  const confirmation = $('backup-password-confirm').value;
+  if (password.length < 8) {
+    showToast('Backup password must be at least 8 characters.');
+    return;
+  }
+  if (password !== confirmation) {
+    showToast('The two backup passwords do not match.');
+    return;
+  }
+  const btn = $('create-backup-btn');
+  btn.disabled = true;
+  try {
+    const backup = await createEncryptedBackup(password);
+    await api.setKeyBackup(backup);
+    $('backup-password').value = '';
+    $('backup-password-confirm').value = '';
+    showToast('Backup created. Remember your backup password: it cannot be recovered.');
+  } catch (err) {
+    showToast(err.message || 'Could not create the backup.');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('restore-backup-btn').addEventListener('click', async () => {
+  const password = $('restore-password').value;
+  if (!password) {
+    showToast('Enter your backup password.');
+    return;
+  }
+  const btn = $('restore-backup-btn');
+  btn.disabled = true;
+  try {
+    const data = await api.getKeyBackup();
+    if (!data.backup) {
+      showToast('No backup was found for this account.');
+      return;
+    }
+    try {
+      await restoreFromEncryptedBackup(password, data.backup);
+    } catch {
+      showToast('Incorrect backup password.');
+      return;
+    }
+    $('restore-password').value = '';
+    // The keys under us just changed: drop everything derived from the old
+    // ones, then reload so login re-publishes the restored identity key.
+    state.myKeyPair = await getOrCreateKeyPair();
+    state.myPublicKeyJwk = await exportPublicKeyJwk(state.myKeyPair.publicKey);
+    state.derivedKeyCache.clear();
+    state.messagesByRoom.clear();
+    state.roomPagination.clear();
+    showToast('Backup restored. Reloading...');
+    setTimeout(() => window.location.reload(), 800);
+  } catch (err) {
+    showToast(err.message || 'Could not restore the backup.');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 
 // ---------------------------------------------------------------------------
 // Bootstrap

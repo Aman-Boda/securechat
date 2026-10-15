@@ -13,14 +13,14 @@ function colorForUsername(username) {
   return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
 }
 
-async function createUser({ username, email, passwordHash }) {
+async function createUser({ username, email, passwordHash, securityMode = 'standard' }) {
   const id = crypto.randomUUID();
   const avatarColor = colorForUsername(username);
   const result = await pool.query(
-    `INSERT INTO users (id, username, email, password_hash, avatar_color)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO users (id, username, email, password_hash, avatar_color, security_mode)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
-    [id, username, email, passwordHash, avatarColor]
+    [id, username, email, passwordHash, avatarColor, securityMode]
   );
   return result.rows[0];
 }
@@ -42,6 +42,10 @@ async function findById(id) {
 
 async function touchLastSeen(id) {
   await pool.query('UPDATE users SET last_seen_at = now() WHERE id = $1', [id]);
+}
+
+async function setSecurityMode(id, mode) {
+  await pool.query('UPDATE users SET security_mode = $1 WHERE id = $2', [mode, id]);
 }
 
 async function setPublicKey(id, publicKeyJwk) {
@@ -112,7 +116,7 @@ function escapeLikePattern(raw) {
 async function searchUsers(query, excludeId, limit = 10) {
   const pattern = `%${escapeLikePattern(query)}%`;
   const result = await pool.query(
-    `SELECT id, username, avatar_color, last_seen_at, public_key
+    `SELECT id, username, avatar_color, last_seen_at, public_key, security_mode
      FROM users
      WHERE id != $1 AND username ILIKE $2 ESCAPE '\\'
      ORDER BY username ASC
@@ -131,6 +135,7 @@ function toPublic(user) {
     avatarColor: user.avatar_color,
     publicKey: parsePublicKey(user),
     emailVerified: user.email_verified,
+    securityMode: user.security_mode,
     createdAt: user.created_at,
     lastSeenAt: user.last_seen_at,
   };
@@ -143,6 +148,7 @@ module.exports = {
   findById,
   touchLastSeen,
   setPublicKey,
+  setSecurityMode,
   setVerificationToken,
   verifyEmailByTokenHash,
   setResetToken,

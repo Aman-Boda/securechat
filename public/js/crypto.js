@@ -12,7 +12,7 @@
 // message, if the recipient has published an epoch key too, both sides
 // derive the encryption key from an EPHEMERAL-TO-EPHEMERAL exchange —
 // neither long-term identity key is involved in that derivation at all.
-// The ephemeral private key is held only briefly (a few epochs' worth, for
+// In Maximum Security mode the ephemeral private key is held only briefly (30 days, for
 // catch-up) and then genuinely discarded — not just unused, deleted — so
 // even someone who later steals your identity key cannot reconstruct it.
 // If the recipient hasn't published an epoch key (they simply weren't
@@ -41,7 +41,15 @@ const IDENTITY_RECORD_KEY = 'identity';
 const EC_PARAMS = { name: 'ECDH', namedCurve: 'P-256' };
 
 export const EPOCH_DURATION_MS = 60 * 60 * 1000; // 1 hour
-const EPOCH_RETENTION_COUNT = 3; // current epoch + 2 previous — a grace window for catching up after being briefly offline, then genuinely gone
+// Retention is a per-account security choice ('standard' vs 'strict', picked
+// at signup). 'strict' keeps real forward secrecy: 30 days is long enough to
+// be usable, short enough that a compromise only exposes a bounded window.
+// 'standard' never prunes, trading that guarantee for permanent history and
+// full-device backup/restore.
+const RETENTION_EPOCHS = {
+  strict: 24 * 30, // 30 days at one epoch per hour
+  standard: Infinity,
+};
 
 export function currentEpochIndex() {
   return Math.floor(Date.now() / EPOCH_DURATION_MS);
@@ -130,7 +138,7 @@ export async function getOrCreateKeyPair() {
 // Returns this epoch's ephemeral key pair, generating one (and pruning
 // aged-out ones) the first time it's needed. `isNew` tells the caller
 // whether the public half still needs publishing to the server.
-export async function getOrCreateCurrentEpochKeyPair() {
+export async function getOrCreateCurrentEpochKeyPair(securityMode = 'strict') {
   const epochIndex = currentEpochIndex();
   try {
     const stored = await idbGet(EPHEMERAL_STORE, epochIndex);
@@ -144,7 +152,7 @@ export async function getOrCreateCurrentEpochKeyPair() {
   const pair = await crypto.subtle.generateKey(EC_PARAMS, true, ['deriveKey']);
   try {
     await idbPut(EPHEMERAL_STORE, epochIndex, pair);
-    await pruneOldEphemeralKeys(epochIndex - EPOCH_RETENTION_COUNT + 1);
+    await pruneOldEphemeralKeys(epochIndex - (RETENTION_EPOCHS[securityMode] ?? RETENTION_EPOCHS.strict) + 1);
   } catch (err) {
     console.warn('Could not persist ephemeral key — it will regenerate next reload:', err);
   }
@@ -245,4 +253,109 @@ export async function computeSafetyNumber(myUserId, myPublicKeyJwk, theirUserId,
     if (i % 5 === 4 && i !== 9) code += '  ';
   }
   return code;
+}
+
+// ---------------------------------------------------------------------------
+// Password-encrypted key backup: lets an account restore message-decryption
+// ability on a new device. The server only ever stores the ciphertext, salt,
+// and iv below; it never sees the backup password or anything derivable into
+// the actual encryption key.
+// ---------------------------------------------------------------------------
+
+const PBKDF2_ITERATIONS = 600000; // current OWASP guidance for PBKDF2-HMAC-SHA256
+
+async function deriveBackupKey(password, saltBytes) {
+  const baseKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, [
+    'deriveKey',
+  ]);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: saltBytes, iterations: PBKDF2_ITERATIONS },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function idbGetAllKeys(storeName) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).getAllKeys();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Gathers everything currently stored (the identity key pair and every
+// retained ephemeral key pair) as exportable JWK data.
+async function exportAllKeysForBackup() {
+  const identity = await getOrCreateKeyPair();
+  const identityExported = {
+    publicKey: await crypto.subtle.exportKey('jwk', identity.publicKey),
+    privateKey: await crypto.subtle.exportKey('jwk', identity.privateKey),
+  };
+
+  const epochIndices = await idbGetAllKeys(EPHEMERAL_STORE);
+  const ephemeral = {};
+  for (const epochIndex of epochIndices) {
+    const pair = await idbGet(EPHEMERAL_STORE, epochIndex);
+    if (pair && pair.publicKey && pair.privateKey) {
+      ephemeral[epochIndex] = {
+        publicKey: await crypto.subtle.exportKey('jwk', pair.publicKey),
+        privateKey: await crypto.subtle.exportKey('jwk', pair.privateKey),
+      };
+    }
+  }
+
+  return { identity: identityExported, ephemeral };
+}
+
+// Re-imports keys from a decrypted backup into this browser's IndexedDB.
+// Existing keys for the same epoch are overwritten: a full restore, not a merge.
+async function importKeysFromBackup(data) {
+  if (data.identity) {
+    const publicKey = await crypto.subtle.importKey('jwk', data.identity.publicKey, EC_PARAMS, true, []);
+    const privateKey = await crypto.subtle.importKey('jwk', data.identity.privateKey, EC_PARAMS, true, ['deriveKey']);
+    await idbPut(IDENTITY_STORE, IDENTITY_RECORD_KEY, { publicKey, privateKey });
+    cachedIdentityKeyPair = null; // force a re-read from IndexedDB next time it is needed
+  }
+  if (data.ephemeral) {
+    for (const [epochIndexStr, jwkPair] of Object.entries(data.ephemeral)) {
+      const publicKey = await crypto.subtle.importKey('jwk', jwkPair.publicKey, EC_PARAMS, true, []);
+      const privateKey = await crypto.subtle.importKey('jwk', jwkPair.privateKey, EC_PARAMS, true, ['deriveKey']);
+      await idbPut(EPHEMERAL_STORE, Number(epochIndexStr), { publicKey, privateKey });
+    }
+  }
+}
+
+// Full orchestration: gather all keys, encrypt them with a password-derived
+// key, return base64 fields ready to upload. The password never leaves here.
+export async function createEncryptedBackup(password) {
+  const keys = await exportAllKeysForBackup();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const backupKey = await deriveBackupKey(password, salt);
+  const ciphertextBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    backupKey,
+    new TextEncoder().encode(JSON.stringify(keys))
+  );
+  return {
+    ciphertext: bufToBase64(ciphertextBuf),
+    salt: bufToBase64(salt),
+    iv: bufToBase64(iv),
+  };
+}
+
+// Full orchestration: decrypt a fetched backup with the given password and
+// import everything into this browser. Throws if the password is wrong
+// (AES-GCM authentication fails): callers should catch that and show a clear
+// "incorrect password" message rather than a generic error.
+export async function restoreFromEncryptedBackup(password, { ciphertext, salt, iv }) {
+  const backupKey = await deriveBackupKey(password, base64ToBuf(salt));
+  const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBuf(iv) }, backupKey, base64ToBuf(ciphertext));
+  const data = JSON.parse(new TextDecoder().decode(plainBuf));
+  await importKeysFromBackup(data);
+  return data;
 }

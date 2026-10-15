@@ -224,6 +224,81 @@ a {
   padding: 0;
 }
 
+.security-mode-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-mode-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.security-mode-card:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--surface-raised);
+}
+
+.security-mode-card input[type='radio'] {
+  margin-top: 3px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.security-mode-card strong {
+  font-size: 13px;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.security-mode-card p {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.settings-modal {
+  max-width: 440px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.settings-section {
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-section:first-of-type {
+  border-top: none;
+  padding-top: 4px;
+}
+
+.settings-section h3 {
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+
+.settings-section p {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+.settings-note {
+  color: var(--text-faint) !important;
+  font-style: italic;
+}
+
 .form-error {
   background: rgba(196, 100, 92, 0.12);
   border: 1px solid rgba(196, 100, 92, 0.4);

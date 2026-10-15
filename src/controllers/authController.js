@@ -40,6 +40,7 @@ function generateToken() {
 
 async function register(req, res) {
   const { username, email, password } = req.body;
+  const securityMode = req.body.securityMode === 'strict' ? 'strict' : 'standard';
 
   if (await userRepo.findByUsername(username)) {
     return res.status(409).json({ error: 'That username is already taken.' });
@@ -49,7 +50,7 @@ async function register(req, res) {
   }
 
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-  const user = await userRepo.createUser({ username, email, passwordHash });
+  const user = await userRepo.createUser({ username, email, passwordHash, securityMode });
 
   // Best-effort: registration succeeds even if the verification email
   // fails to send (e.g. email isn't configured yet) — verification is a

@@ -1,5 +1,6 @@
 const userRepo = require('../db/repositories/userRepo');
 const epochKeyRepo = require('../db/repositories/epochKeyRepo');
+const keyBackupRepo = require('../db/repositories/keyBackupRepo');
 
 async function search(req, res) {
   const query = (req.query.q || '').toString().trim();
@@ -15,6 +16,7 @@ async function search(req, res) {
       avatarColor: u.avatar_color,
       lastSeenAt: u.last_seen_at,
       publicKey: u.public_key ? JSON.parse(u.public_key) : null,
+      securityMode: u.security_mode,
     })),
   });
 }
@@ -61,4 +63,46 @@ async function getEpochKey(req, res) {
   return res.json({ publicKey });
 }
 
-module.exports = { search, setPublicKey, setEpochKey, getEpochKey };
+// Lets a user switch between 'standard' (keys never pruned, full history,
+// backup restores everything) and 'strict' (keys pruned after 30 days, real
+// forward secrecy) after signup. Purely forward-looking: it does not
+// retroactively delete or restore anything that already happened.
+async function setSecurityMode(req, res) {
+  const { securityMode } = req.body;
+  if (securityMode !== 'standard' && securityMode !== 'strict') {
+    return res.status(400).json({ error: "securityMode must be 'standard' or 'strict'." });
+  }
+  await userRepo.setSecurityMode(req.user.id, securityMode);
+  return res.status(204).send();
+}
+
+// Stores a password-encrypted backup of the caller's local keys. The server
+// only ever sees ciphertext, a salt, and an iv: never the password, never
+// anything it could decrypt with.
+async function setKeyBackup(req, res) {
+  const { ciphertext, salt, iv } = req.body;
+  if (!ciphertext || typeof ciphertext !== 'string') {
+    return res.status(400).json({ error: 'ciphertext is required.' });
+  }
+  if (!salt || typeof salt !== 'string') {
+    return res.status(400).json({ error: 'salt is required.' });
+  }
+  if (!iv || typeof iv !== 'string') {
+    return res.status(400).json({ error: 'iv is required.' });
+  }
+  await keyBackupRepo.setBackup(req.user.id, { ciphertext, salt, iv });
+  return res.status(204).send();
+}
+
+// Returns the caller's own backup blob, or { backup: null } if they have
+// never created one. Used when restoring on a new device.
+async function getKeyBackup(req, res) {
+  const backup = await keyBackupRepo.getBackup(req.user.id);
+  return res.json({
+    backup: backup
+      ? { ciphertext: backup.ciphertext, salt: backup.salt, iv: backup.iv, updatedAt: backup.updated_at }
+      : null,
+  });
+}
+
+module.exports = { search, setPublicKey, setEpochKey, getEpochKey, setSecurityMode, setKeyBackup, getKeyBackup };

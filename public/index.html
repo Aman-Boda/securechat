@@ -60,6 +60,26 @@
           <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="8" required />
           <div class="field-hint">At least 8 characters.</div>
         </div>
+        <div class="field">
+          <label>Message security</label>
+          <div class="security-mode-choice">
+            <label class="security-mode-card">
+              <input type="radio" name="securityMode" value="standard" checked />
+              <div>
+                <strong>Standard</strong>
+                <p>Messages stay readable forever. Move to a new device anytime with a backup password.</p>
+              </div>
+            </label>
+            <label class="security-mode-card">
+              <input type="radio" name="securityMode" value="strict" />
+              <div>
+                <strong>Maximum Security</strong>
+                <p>Real forward secrecy: old messages become unreadable after 30 days, even if your device is compromised later. No full-history device transfer.</p>
+              </div>
+            </label>
+          </div>
+          <div class="field-hint">You can change this later. It will not undo what already happened under the old mode.</div>
+        </div>
         <button type="submit" class="btn btn-primary" id="register-submit">Create account</button>
         <p class="auth-switch">Already have an account? <button type="button" id="show-login">Log in</button></p>
       </form>
@@ -134,6 +154,7 @@
       <div class="sidebar-footer">
         <div class="avatar sm" id="me-avatar"></div>
         <span class="me-name" id="me-name"></span>
+        <button class="icon-btn" id="settings-btn" title="Security settings">⚙</button>
         <button class="icon-btn" id="logout-btn" title="Log out">⎋</button>
       </div>
     </aside>
@@ -211,6 +232,49 @@
         the server, which end-to-end encryption alone doesn't rule out.
       </p>
       <div id="safety-number-code" class="safety-code"></div>
+      <p id="safety-number-fs-note" class="settings-note"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-modal>Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SECURITY SETTINGS MODAL ============ -->
+  <div id="settings-modal" class="modal-backdrop hidden">
+    <div class="modal settings-modal">
+      <h2>Security settings</h2>
+
+      <div class="settings-section">
+        <h3>Message security mode</h3>
+        <p id="settings-mode-description"></p>
+        <button type="button" class="btn btn-ghost" id="settings-switch-mode-btn"></button>
+      </div>
+
+      <div class="settings-section">
+        <h3>Back up your keys</h3>
+        <p>
+          Lets you read your message history on a new device. Choose a backup password. <strong>If you forget it,
+          the backup cannot be recovered by anyone, including us.</strong> Use something different from your login password.
+        </p>
+        <p id="settings-backup-scope-note" class="settings-note"></p>
+        <div class="field">
+          <input id="backup-password" type="password" placeholder="Backup password" autocomplete="new-password" minlength="8" />
+        </div>
+        <div class="field">
+          <input id="backup-password-confirm" type="password" placeholder="Confirm backup password" autocomplete="new-password" minlength="8" />
+        </div>
+        <button type="button" class="btn btn-ghost" id="create-backup-btn">Create backup</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>Restore from backup</h3>
+        <p>Use this on a new device, right after logging in and before chatting. It replaces the keys currently stored in this browser.</p>
+        <div class="field">
+          <input id="restore-password" type="password" placeholder="Backup password" autocomplete="off" />
+        </div>
+        <button type="button" class="btn btn-ghost" id="restore-backup-btn">Restore backup</button>
+      </div>
+
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" data-close-modal>Close</button>
       </div>

@@ -147,7 +147,7 @@ async function getRoomSummaryForUser(roomId, userId) {
 
   if (!room.is_group) {
     const otherResult = await pool.query(
-      `SELECT u.id, u.username, u.avatar_color, u.last_seen_at, u.public_key
+      `SELECT u.id, u.username, u.avatar_color, u.last_seen_at, u.public_key, u.security_mode
        FROM room_memberships m
        JOIN users u ON u.id = m.user_id
        WHERE m.room_id = $1 AND m.user_id != $2
@@ -162,6 +162,7 @@ async function getRoomSummaryForUser(roomId, userId) {
         avatarColor: other.avatar_color,
         lastSeenAt: other.last_seen_at,
         publicKey: other.public_key ? JSON.parse(other.public_key) : null,
+        securityMode: other.security_mode,
       };
       displayName = other.username;
     } else {
