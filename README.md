@@ -7,6 +7,7 @@ with security as a first-class concern rather than an afterthought.
 
 - Register / log in / log out
 - Direct messages (1-on-1), **end-to-end encrypted with forward secrecy**, and group rooms (not encrypted — see below)
+- **Your choice of security mode** at signup: Standard (history readable forever, restorable on a new device with a backup password) or Maximum Security (real forward secrecy, 30-day key retention)
 - Real-time delivery over WebSockets (Socket.io)
 - Typing indicators
 - Online / offline presence with "last seen"
@@ -231,6 +232,36 @@ and fallback derivation paths, and the actual deletion behavior — was
 verified with real cryptography against the live server and socket
 connections, not just unit-level math.
 
+**Standard vs. Maximum Security — your choice, per account.** Forward secrecy
+and "I can read my whole history forever, on any device" are opposite
+properties of the same secret: a key cannot be both provably deleted and
+recoverable. So instead of picking for everyone, each account chooses at
+signup (and can switch later under the gear icon; a switch only affects what
+happens going forward):
+
+| | Standard | Maximum Security |
+|---|---|---|
+| Old message keys | Kept permanently on your device | Deleted after 30 days |
+| Message history | Readable forever | Messages older than 30 days become permanently unreadable |
+| New device | Full history restorable with a backup password | Only the last 30 days are restorable |
+| If your device and backup password are both compromised later | Everything you have received is exposed | Only the last 30 days are exposed |
+
+**Backups.** Gear icon, "Create backup" encrypts your identity key and
+retained ephemeral keys in your browser with a password you choose
+(PBKDF2-SHA256, 600,000 iterations, then AES-256-GCM). The server stores only
+the resulting ciphertext; it never sees the password or anything it could
+decrypt with. **If you forget the backup password, the backup cannot be
+recovered by anyone.** To move to a new device: log in there, open the gear
+icon, "Restore from backup", and do this before chatting from the new device,
+so nothing gets encrypted to the temporary keys it generated at login.
+
+**A conversation is only as strict as its less strict person.** Forward
+secrecy for a message needs *both* sides to delete their keys: either side's
+retained private key plus the other side's (public) ephemeral key is enough
+to re-derive the message key. If you are on Maximum Security but your contact
+is on Standard, that conversation has no forward-secrecy guarantee. The lock
+panel in a DM tells you which case you are in.
+
 **Verifying it's really them — the safety number:** encryption alone
 doesn't stop a *server* that's actively lying about someone's public key
 (a "man in the middle"). Click the 🔒 in a DM's header to see a safety
@@ -285,6 +316,9 @@ cookie (the browser sends it automatically).
 | POST | `/auth/reset-password` | Set a new password `{ token, newPassword }` — logs out every other session on the account |
 | GET | `/users/search?q=` | Find users by username (includes their public key, if set) |
 | PUT | `/users/me/public-key` | Upload your long-term E2EE identity public key `{ publicKey }` (JWK) — done automatically by the app on login |
+| PUT | `/users/me/security-mode` | Switch between `standard` and `strict` `{ securityMode }` |
+| PUT | `/users/me/key-backup` | Store your password-encrypted key backup `{ ciphertext, salt, iv }` (the server only ever sees ciphertext) |
+| GET | `/users/me/key-backup` | Fetch your own backup, or `{ backup: null }` if you have never made one |
 | PUT | `/users/me/epoch-key` | Publish your one-time ephemeral public key for an hour `{ epochIndex, publicKey }` — done automatically before sending, for forward secrecy |
 | GET | `/users/:userId/epoch-key/:epochIndex` | Fetch someone's published epoch key, if any (`{ publicKey: null }` if they weren't active that hour — not an error) |
 | GET | `/rooms` | Your rooms (DMs + groups), with previews |
@@ -320,6 +354,6 @@ cookie (the browser sends it automatically).
 ## Possible next steps
 
 - Forward secrecy for the identity-fallback path too (currently only mutual-ephemeral messages get it — see the E2EE section above)
-- Multi-device support for encrypted DMs (currently: a new browser/device means new keys, and old encrypted messages can't be read there)
+- Live multi-device sync for encrypted DMs (today a new device needs a manual backup restore; true sync would encrypt each message to every one of a recipient's devices)
 - Group room encryption (harder — needs encrypting to multiple recipients and handling membership changes)
 - Cross-tab unread sync (right now, reading on one open tab doesn't clear the badge on another tab of the same account until it re-fetches)
