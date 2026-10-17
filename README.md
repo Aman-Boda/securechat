@@ -232,6 +232,12 @@ and fallback derivation paths, and the actual deletion behavior — was
 verified with real cryptography against the live server and socket
 connections, not just unit-level math.
 
+**What "active" means.** Your hourly key is published when you open the app
+(and refreshed each hour while it stays open), not only when you send. So
+anyone who had the app open during an hour can receive messages under the
+strong mutual mode; someone offline for that whole hour gets the weaker
+identity fallback.
+
 **Standard vs. Maximum Security — your choice, per account.** Forward secrecy
 and "I can read my whole history forever, on any device" are opposite
 properties of the same secret: a key cannot be both provably deleted and

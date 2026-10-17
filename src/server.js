@@ -11,6 +11,8 @@ const { Server } = require('socket.io');
 // insecurely.
 const { port, clientOrigin, isProduction } = require('./config/env');
 
+const { requireAuth } = require('./middleware/auth');
+const { backupLimiter } = require('./middleware/rateLimiter');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const roomRoutes = require('./routes/rooms');
@@ -45,6 +47,11 @@ app.use(
 );
 app.use(cors({ origin: clientOrigin, credentials: true }));
 app.use(cookieParser());
+// The encrypted key backup grows by one key pair per active hour, so it needs
+// a far larger body limit than ordinary requests. That limit applies to this
+// one route only, and only after authentication and rate limiting, so an
+// anonymous client can never make the server buffer a large body.
+app.put('/api/users/me/key-backup', requireAuth, backupLimiter, express.json({ limit: '20mb' }));
 app.use(express.json({ limit: '100kb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -70,7 +77,11 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error(err);
   if (res.headersSent) return next(err);
-  res.status(500).json({ error: 'Something went wrong on our end.' });
+  const status = err.status >= 400 && err.status < 500 ? err.status : 500;
+  res.status(status).json({
+    error:
+      status === 413 ? 'That request is too large.' : status < 500 ? 'Bad request.' : 'Something went wrong on our end.',
+  });
 });
 
 initSockets(io);

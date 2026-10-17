@@ -22,4 +22,15 @@ const apiLimiter = rateLimit({
   message: { error: 'Too many requests. Please slow down.' },
 });
 
-module.exports = { authLimiter, apiLimiter };
+// The encrypted key backup is large (it grows with account age) and is parsed
+// with a bigger body limit than other routes, so uploads are capped per hour
+// to keep that from being abused.
+const backupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many backup uploads. Please try again later.' },
+});
+
+module.exports = { authLimiter, apiLimiter, backupLimiter };

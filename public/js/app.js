@@ -1208,12 +1208,17 @@ $('logout-btn').addEventListener('click', async () => {
     // Even if the request fails, still clear local state and log the UI out.
   }
   disconnectSocket();
+  clearInterval(epochKeyTimer);
   state.me = null;
   state.rooms = [];
   state.activeRoomId = null;
   state.messagesByRoom.clear();
   state.typingByRoom.clear();
   state.onlineUsers.clear();
+  // Per-session key caches must not leak into the next login in this tab.
+  state.publishedEpochIndex = null;
+  state.derivedKeyCache.clear();
+  state.theirEpochKeyCache.clear();
   showAuthScreen();
 });
 
@@ -1225,6 +1230,16 @@ function showAuthScreen() {
   $('register-form').reset();
   $('forgot-password-form').reset();
   $('reset-password-form').reset();
+}
+
+// Publishes our current hourly key on a timer as well, so an app left open
+// across an hour boundary keeps counting as active.
+let epochKeyTimer = null;
+function startEpochKeyRefresh() {
+  clearInterval(epochKeyTimer);
+  epochKeyTimer = setInterval(() => {
+    if (state.me) ensureEpochKeyPublished().catch(() => {});
+  }, 5 * 60 * 1000);
 }
 
 async function initApp(user) {
@@ -1242,6 +1257,12 @@ async function initApp(user) {
     console.error('Encryption setup failed — secure messaging may not work this session:', err);
     showToast('Secure messaging could not initialize in this browser.');
   }
+
+  // Being online counts as being active: publish this hour's key now (and keep
+  // doing so hourly while the app stays open), not only when sending, so
+  // senders can use the stronger mutual mode with us.
+  ensureEpochKeyPublished().catch((err) => console.warn('Could not publish this hours key:', err));
+  startEpochKeyRefresh();
 
   connectSocket();
   onSocket('message:new', handleIncomingMessage);
