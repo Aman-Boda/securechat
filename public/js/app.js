@@ -12,6 +12,9 @@ import {
   getEphemeralPrivateKeyForEpoch,
   createEncryptedBackup,
   restoreFromEncryptedBackup,
+  setKeyOwner,
+  migrateLegacyKeys,
+  purgeLegacyEphemeralKeys,
 } from './crypto.js';
 
 const state = {
@@ -95,6 +98,16 @@ function closeModal(id) {
 // Generates (or loads) this browser's key pair and makes sure the server has
 // our current public key on file. Called once, right after login.
 async function initializeEncryption() {
+  // Existing accounts: bring their keys across from the old shared key database
+  // (copy only) before anything generates new ones.
+  legacyMigrationOk = true;
+  try {
+    await migrateLegacyKeys(state.me.publicKey);
+  } catch (err) {
+    legacyMigrationOk = false;
+    console.error('Could not migrate keys from the old storage:', err);
+  }
+
   state.myKeyPair = await getOrCreateKeyPair();
   state.myPublicKeyJwk = await exportPublicKeyJwk(state.myKeyPair.publicKey);
 
@@ -1210,6 +1223,7 @@ $('logout-btn').addEventListener('click', async () => {
   disconnectSocket();
   clearInterval(epochKeyTimer);
   state.me = null;
+  setKeyOwner(null);
   state.rooms = [];
   state.activeRoomId = null;
   state.messagesByRoom.clear();
@@ -1235,6 +1249,7 @@ function showAuthScreen() {
 // Publishes our current hourly key on a timer as well, so an app left open
 // across an hour boundary keeps counting as active.
 let epochKeyTimer = null;
+let legacyMigrationOk = true; // old-storage cleanup is skipped unless migration succeeded
 function startEpochKeyRefresh() {
   clearInterval(epochKeyTimer);
   epochKeyTimer = setInterval(() => {
@@ -1244,6 +1259,7 @@ function startEpochKeyRefresh() {
 
 async function initApp(user) {
   state.me = user;
+  setKeyOwner(user.id); // keys live in a per-account database (see crypto.js)
   $('auth-screen').classList.add('hidden');
   $('app-screen').classList.remove('hidden');
 
@@ -1256,6 +1272,12 @@ async function initApp(user) {
   } catch (err) {
     console.error('Encryption setup failed — secure messaging may not work this session:', err);
     showToast('Secure messaging could not initialize in this browser.');
+  }
+
+  // Maximum Security: drop any leftover copy of our ephemeral keys in the old shared
+  // database, but only once migration succeeded and only if those keys are verifiably ours.
+  if (legacyMigrationOk && state.me.securityMode === 'strict') {
+    purgeLegacyEphemeralKeys().catch((err) => console.warn('Could not clear old key storage:', err));
   }
 
   // Being online counts as being active: publish this hour's key now (and keep
@@ -1341,6 +1363,10 @@ $('settings-switch-mode-btn').addEventListener('click', async () => {
   }
   try {
     await api.setSecurityMode(next);
+    if (next === 'strict' && legacyMigrationOk) {
+      // Choosing Maximum Security also clears any leftover copy of our ephemeral keys in the old shared database.
+      await purgeLegacyEphemeralKeys().catch(() => {});
+    }
     state.me.securityMode = next;
     renderSettingsModal();
     showToast(`Switched to ${next === 'strict' ? 'Maximum Security' : 'Standard'} mode.`);

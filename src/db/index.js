@@ -16,10 +16,7 @@ if (!process.env.DATABASE_URL) {
 // recommend for this exact setup. Local Postgres (no sslmode in the URL)
 // skips SSL entirely, since a same-machine connection has nothing to protect
 // in transit and most local installs don't have SSL configured at all.
-
-// Enable SSL whenever NODE_ENV is set to 'production' or explicitly configured via environment flags/URL.
-const isProduction = process.env.NODE_ENV === 'production';
-const useSsl = isProduction || /sslmode=require/.test(process.env.DATABASE_URL) || process.env.PGSSL === 'true';
+const useSsl = /sslmode=require/.test(process.env.DATABASE_URL) || process.env.PGSSL === 'true';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -28,7 +25,7 @@ const pool = new Pool({
 
 pool.on('error', (err) => {
   // A background/idle client emitting an error should not crash the whole
-    // process — log it and let the pool recover the connection.
+  // process — log it and let the pool recover the connection.
   console.error('Unexpected error on idle Postgres client:', err);
 });
 
@@ -38,4 +35,3 @@ async function initDb() {
 }
 
 module.exports = { pool, initDb };
-

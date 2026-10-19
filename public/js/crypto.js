@@ -33,7 +33,24 @@
 //   comparing it out-of-band is what actually protects against a malicious
 //   server substituting a public key mid-conversation.
 
-const DB_NAME = 'securechat-keys';
+// Keys are stored per account: one IndexedDB database per user id, so two
+// accounts used in the same browser never share (or overwrite) each other's
+// keys. LEGACY_DB_NAME is the single shared database older versions used.
+const LEGACY_DB_NAME = 'securechat-keys';
+let keyOwnerId = null;
+
+export function setKeyOwner(userId) {
+  const next = userId || null;
+  if (next !== keyOwnerId) {
+    keyOwnerId = next;
+    cachedIdentityKeyPair = null; // never carry one account's in-memory key into another
+  }
+}
+
+function dbName() {
+  if (!keyOwnerId) throw new Error('Key storage is not available before login.');
+  return `${LEGACY_DB_NAME}-${keyOwnerId}`;
+}
 const DB_VERSION = 2;
 const IDENTITY_STORE = 'keys';
 const EPHEMERAL_STORE = 'ephemeralKeys';
@@ -57,7 +74,7 @@ export function currentEpochIndex() {
 
 function openDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(dbName(), DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(IDENTITY_STORE)) db.createObjectStore(IDENTITY_STORE);
@@ -358,4 +375,173 @@ export async function restoreFromEncryptedBackup(password, { ciphertext, salt, i
   const data = JSON.parse(new TextDecoder().decode(plainBuf));
   await importKeysFromBackup(data);
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Migration from the old shared key database.
+//
+// Older versions kept every account's keys in one database, so any account
+// that logged in on a browser simply adopted whatever identity key was there.
+// To keep existing history readable we preserve exactly that for accounts that
+// already exist (they have a public key on the server): their first login
+// COPIES the old keys into their own per-account database. Brand-new accounts
+// never adopt old keys; they generate their own. Migration only ever copies:
+// the old database is never modified here.
+// ---------------------------------------------------------------------------
+
+function idbRequest(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Opens the legacy database only if it already exists. A plain open() would
+// silently create an empty one; aborting the upgrade transaction that creation
+// triggers leaves nothing behind.
+function openLegacyDbIfExists() {
+  return new Promise((resolve) => {
+    let existed = true;
+    let req;
+    try {
+      req = indexedDB.open(LEGACY_DB_NAME);
+    } catch {
+      resolve(null);
+      return;
+    }
+    req.onupgradeneeded = () => {
+      existed = false;
+      try {
+        req.transaction.abort();
+      } catch {
+        // nothing to abort
+      }
+    };
+    req.onsuccess = () => {
+      if (existed) {
+        resolve(req.result);
+      } else {
+        try {
+          req.result.close();
+        } catch {
+          // ignore
+        }
+        resolve(null);
+      }
+    };
+    req.onerror = () => resolve(null);
+    req.onblocked = () => resolve(null);
+  });
+}
+
+async function readLegacyKeys() {
+  const db = await openLegacyDbIfExists();
+  if (!db) return null;
+  try {
+    let identity = null;
+    if (db.objectStoreNames.contains(IDENTITY_STORE)) {
+      const stored = await idbRequest(
+        db.transaction(IDENTITY_STORE, 'readonly').objectStore(IDENTITY_STORE).get(IDENTITY_RECORD_KEY)
+      );
+      if (stored && stored.publicKey && stored.privateKey) identity = stored;
+    }
+    const ephemeral = [];
+    if (db.objectStoreNames.contains(EPHEMERAL_STORE)) {
+      const keys = await idbRequest(
+        db.transaction(EPHEMERAL_STORE, 'readonly').objectStore(EPHEMERAL_STORE).getAllKeys()
+      );
+      for (const epochIndex of keys) {
+        const pair = await idbRequest(
+          db.transaction(EPHEMERAL_STORE, 'readonly').objectStore(EPHEMERAL_STORE).get(epochIndex)
+        );
+        if (pair && pair.publicKey && pair.privateKey) ephemeral.push([epochIndex, pair]);
+      }
+    }
+    return { identity, ephemeral };
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+// Returns 'migrated' (something was copied), 'already' (nothing left to copy)
+// or 'none' (no legacy keys to adopt, or a brand-new account). Safe to call on
+// every login: it resumes an interrupted copy, and verifies what it copied.
+export async function migrateLegacyKeys(serverPublicKeyJwk) {
+  const existing = await idbGet(IDENTITY_STORE, IDENTITY_RECORD_KEY);
+  const hasOwn = !!(existing && existing.publicKey && existing.privateKey);
+  if (!hasOwn && !serverPublicKeyJwk) return 'none'; // brand-new account: gets its own keys
+
+  const legacy = await readLegacyKeys();
+  if (!legacy || !legacy.identity) return hasOwn ? 'already' : 'none';
+
+  const legacyPublicJwk = await crypto.subtle.exportKey('jwk', legacy.identity.publicKey);
+  if (hasOwn) {
+    // An account that already has its own, different identity is never touched.
+    const ownJwk = await crypto.subtle.exportKey('jwk', existing.publicKey);
+    if (keyFingerprint(ownJwk) !== keyFingerprint(legacyPublicJwk)) return 'already';
+  }
+
+  let copiedAnything = false;
+  if (!hasOwn) {
+    await idbPut(IDENTITY_STORE, IDENTITY_RECORD_KEY, legacy.identity);
+    copiedAnything = true;
+  }
+  const have = new Set(await idbGetAllKeys(EPHEMERAL_STORE));
+  for (const [epochIndex, pair] of legacy.ephemeral) {
+    if (!have.has(epochIndex)) {
+      await idbPut(EPHEMERAL_STORE, epochIndex, pair);
+      copiedAnything = true;
+    }
+  }
+  if (!copiedAnything) return 'already';
+
+  // Verify the copy before anyone is allowed to rely on it.
+  const copied = await idbGet(IDENTITY_STORE, IDENTITY_RECORD_KEY);
+  if (!copied) throw new Error('Key migration could not be verified.');
+  const copiedJwk = await crypto.subtle.exportKey('jwk', copied.publicKey);
+  if (keyFingerprint(copiedJwk) !== keyFingerprint(legacyPublicJwk)) throw new Error('Key migration could not be verified.');
+  const nowHave = new Set(await idbGetAllKeys(EPHEMERAL_STORE));
+  for (const [epochIndex] of legacy.ephemeral) {
+    if (!nowHave.has(epochIndex)) throw new Error('Key migration could not be verified.');
+  }
+  cachedIdentityKeyPair = null;
+  return 'migrated';
+}
+
+// Clears the legacy database's ephemeral keys, but ONLY when the legacy
+// identity key is verifiably this account's (it matches our current identity).
+// Used for Maximum Security accounts: an old, never-pruned copy of their
+// ephemeral keys would otherwise defeat the 30-day deletion guarantee. Keys
+// that belong to a different identity are never touched.
+export async function purgeLegacyEphemeralKeys() {
+  const mine = await getOrCreateKeyPair();
+  const myJwk = await crypto.subtle.exportKey('jwk', mine.publicKey);
+  const db = await openLegacyDbIfExists();
+  if (!db) return false;
+  try {
+    if (!db.objectStoreNames.contains(IDENTITY_STORE) || !db.objectStoreNames.contains(EPHEMERAL_STORE)) return false;
+    const legacyIdentity = await idbRequest(
+      db.transaction(IDENTITY_STORE, 'readonly').objectStore(IDENTITY_STORE).get(IDENTITY_RECORD_KEY)
+    );
+    if (!legacyIdentity || !legacyIdentity.publicKey) return false;
+    const legacyJwk = await crypto.subtle.exportKey('jwk', legacyIdentity.publicKey);
+    if (keyFingerprint(legacyJwk) !== keyFingerprint(myJwk)) return false;
+    const tx = db.transaction(EPHEMERAL_STORE, 'readwrite');
+    tx.objectStore(EPHEMERAL_STORE).clear();
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    return true;
+  } finally {
+    try {
+      db.close();
+    } catch {
+      // ignore
+    }
+  }
 }

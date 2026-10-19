@@ -252,6 +252,16 @@ happens going forward):
 | New device | Full history restorable with a backup password | Only the last 30 days are restorable |
 | If your device and backup password are both compromised later | Everything you have received is exposed | Only the last 30 days are exposed |
 
+**Keys are per account.** Each account's keys live in their own browser
+database, so two accounts used in the same browser no longer share or
+overwrite each other's keys. Accounts that existed before this change adopt
+the old shared keys on their first login (so existing history stays readable);
+brand-new accounts always generate their own. The old database is never
+deleted automatically. A Maximum Security account clears its leftover ephemeral
+keys from it, so the 30-day deletion guarantee still holds. (If several
+pre-existing accounts shared one browser, the first Maximum Security account
+to log in clears those shared old keys for all of them.)
+
 **Backups.** Gear icon, "Create backup" encrypts your identity key and
 retained ephemeral keys in your browser with a password you choose
 (PBKDF2-SHA256, 600,000 iterations, then AES-256-GCM). The server stores only
