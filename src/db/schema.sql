@@ -109,6 +109,35 @@ ALTER TABLE messages ADD COLUMN IF NOT EXISTS epoch_index BIGINT;
 --   and no full-history device transfer.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS security_mode TEXT NOT NULL DEFAULT 'standard';
 
+-- Encrypted group chats. A group has a shared AES key per "generation"; the key
+-- is never stored in the clear: each member holds their own copy, wrapped
+-- (encrypted) to their identity public key, in group_keys below.
+--   join_policy    'open' (listed, anyone can join) | 'invite' (admin adds people)
+--   history_policy 'after_join' (newcomers get a fresh key, so they cannot read
+--                  older messages) | 'full' (newcomers also get the older keys)
+--   needs_rotation set when someone leaves or is removed: the next member who
+--                  holds the key replaces it so the leaver reads nothing new.
+-- Existing groups keep encrypted = false and behave exactly as before.
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS encrypted BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS join_policy TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS history_policy TEXT NOT NULL DEFAULT 'after_join';
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS key_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS needs_rotation BOOLEAN NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS group_keys (
+  room_id            TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  generation         INTEGER NOT NULL,
+  user_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  wrapped_key        TEXT NOT NULL,
+  iv                 TEXT NOT NULL,
+  wrapper_public_key TEXT NOT NULL,
+  wrapped_for_fp     TEXT NOT NULL,
+  wrapped_by         TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (room_id, generation, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_keys_user_room ON group_keys(user_id, room_id);
+
 -- An opaque, password-encrypted backup of a user's local keys (identity +
 -- retained ephemeral keys), letting them restore message-decryption
 -- ability on a new device. The server only ever stores ciphertext: it

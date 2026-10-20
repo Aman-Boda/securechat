@@ -134,12 +134,13 @@ async function getRoomSummaryForUser(roomId, userId) {
       [roomId]
     ),
     pool.query('SELECT COUNT(*)::int AS count FROM room_memberships WHERE room_id = $1', [roomId]),
-    pool.query('SELECT last_read_at FROM room_memberships WHERE user_id = $1 AND room_id = $2', [userId, roomId]),
+    pool.query('SELECT last_read_at, role FROM room_memberships WHERE user_id = $1 AND room_id = $2', [userId, roomId]),
   ]);
 
   const lastMessage = lastMessageResult.rows[0] || null;
   const memberCount = memberCountResult.rows[0].count;
   const lastReadAt = membershipResult.rows[0]?.last_read_at || null;
+  const myRole = membershipResult.rows[0]?.role || null;
   const unreadCount = lastReadAt ? await messageRepo.countUnread(roomId, lastReadAt, userId) : 0;
 
   let displayName = room.name;
@@ -174,6 +175,11 @@ async function getRoomSummaryForUser(roomId, userId) {
     id: room.id,
     name: displayName,
     isGroup: !!room.is_group,
+    encrypted: !!room.encrypted,
+    joinPolicy: room.join_policy,
+    historyPolicy: room.history_policy,
+    keyGeneration: room.key_generation,
+    myRole,
     createdAt: room.created_at,
     memberCount,
     unreadCount,
@@ -205,10 +211,10 @@ async function listRoomsForUser(userId) {
 
 async function listJoinableGroupRooms(userId) {
   const result = await pool.query(
-    `SELECT r.id, r.name, r.created_at,
+    `SELECT r.id, r.name, r.created_at, r.encrypted, r.history_policy,
        (SELECT COUNT(*)::int FROM room_memberships WHERE room_id = r.id) AS member_count
      FROM rooms r
-     WHERE r.is_group = true
+     WHERE r.is_group = true AND r.join_policy = 'open'
        AND r.id NOT IN (SELECT room_id FROM room_memberships WHERE user_id = $1)
      ORDER BY r.created_at DESC`,
     [userId]
@@ -218,6 +224,8 @@ async function listJoinableGroupRooms(userId) {
     name: r.name,
     createdAt: r.created_at,
     memberCount: r.member_count,
+    encrypted: !!r.encrypted,
+    historyPolicy: r.history_policy,
   }));
 }
 

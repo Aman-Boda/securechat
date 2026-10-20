@@ -46,7 +46,15 @@ export const api = {
   getKeyBackup: () => apiFetch('/api/users/me/key-backup'),
   listRooms: () => apiFetch('/api/rooms'),
   listJoinableRooms: () => apiFetch('/api/rooms/joinable'),
-  createGroup: (name) => apiFetch('/api/rooms/group', { method: 'POST', body: JSON.stringify({ name }) }),
+  createGroup: (payload) => apiFetch('/api/rooms/group', { method: 'POST', body: JSON.stringify(payload) }),
+  getGroupKeys: (roomId) => apiFetch(`/api/rooms/${roomId}/keys`),
+  getGroupKeyStatus: (roomId) => apiFetch(`/api/rooms/${roomId}/key-status`),
+  putGroupKeys: (roomId, body) => apiFetch(`/api/rooms/${roomId}/keys`, { method: 'PUT', body: JSON.stringify(body) }),
+  addGroupMember: (roomId, userId) =>
+    apiFetch(`/api/rooms/${roomId}/members`, { method: 'POST', body: JSON.stringify({ userId }) }),
+  removeGroupMember: (roomId, userId) => apiFetch(`/api/rooms/${roomId}/members/${userId}`, { method: 'DELETE' }),
+  updateGroupSettings: (roomId, settings) =>
+    apiFetch(`/api/rooms/${roomId}/settings`, { method: 'PATCH', body: JSON.stringify(settings) }),
   startDirect: (userId) => apiFetch('/api/rooms/direct', { method: 'POST', body: JSON.stringify({ userId }) }),
   joinRoom: (roomId) => apiFetch(`/api/rooms/${roomId}/join`, { method: 'POST' }),
   leaveRoom: (roomId) => apiFetch(`/api/rooms/${roomId}/leave`, { method: 'POST' }),

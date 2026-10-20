@@ -13,7 +13,7 @@ const validators = [
   body('iv').optional().isString().withMessage('iv must be a string.'),
   body('epochIndex').optional().isInt({ min: 0 }).withMessage('epochIndex must be a non-negative integer.'),
   body('senderEpochPublicKey').optional().isObject().withMessage('senderEpochPublicKey must be an object.'),
-  body('keyMode').optional().isIn(['mutual', 'identity']).withMessage("keyMode must be 'mutual' or 'identity'."),
+  body('keyMode').optional().isIn(['mutual', 'identity', 'group']).withMessage("keyMode must be 'mutual', 'identity' or 'group'."),
 ];
 
 router.get('/', asyncHandler(messageController.history));

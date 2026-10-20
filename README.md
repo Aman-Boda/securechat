@@ -232,6 +232,32 @@ and fallback derivation paths, and the actual deletion behavior — was
 verified with real cryptography against the live server and socket
 connections, not just unit-level math.
 
+**Encrypted group chats.** Every new group is end-to-end encrypted; groups that
+existed before stay as they were (readable by the server). A group has one
+shared AES-256-GCM key per *generation*. The key is never stored in the clear:
+each member holds their own copy, wrapped (encrypted) to their identity public
+key, and the server only stores those wrapped copies plus ciphertext.
+
+The group's creator (its admin) picks two settings, and can change them later:
+
+| Setting | Options |
+|---|---|
+| Who can join | **Open** (listed under Browse rooms) or **Invite-only** (the admin adds people) |
+| What new members can read | **Only messages sent after they join** (the group switches to a fresh key when they join) or **The full history** (they are also given the older keys) |
+
+When someone leaves or is removed, the key is replaced, so they cannot read
+anything sent afterwards. A new member sees "waiting for the group key" until
+some member who holds the key is online to hand it over. If a member's identity
+key changes (a new device without a backup restore), any member who holds the
+key re-wraps it for the new identity key.
+
+Honest limits of group encryption: there is **no forward secrecy** in groups
+(group keys are wrapped to members' permanent identity keys, unlike DMs); the
+server still controls who is *in* a group, so a server run by someone malicious
+could add a fake member and read what is sent after that; people who left keep
+whatever they already decrypted; re-adding someone to a full-history group gives
+them the whole history again; and a group is limited to 100 members.
+
 **What "active" means.** Your hourly key is published when you open the app
 (and refreshed each hour while it stays open), not only when you send. So
 anyone who had the app open during an hour can receive messages under the

@@ -15,7 +15,14 @@ import {
   setKeyOwner,
   migrateLegacyKeys,
   purgeLegacyEphemeralKeys,
+  generateGroupKey,
+  wrapGroupKey,
+  unwrapGroupKey,
+  encryptGroupMessage,
+  decryptGroupMessage,
+  publicKeyFingerprint,
 } from './crypto.js';
+import { createKeyring } from './groupKeys.js';
 
 const state = {
   me: null,
@@ -38,6 +45,14 @@ const state = {
 // innerHTML — that's what makes the server-side sanitization defense-in-depth
 // rather than the only layer.
 // ---------------------------------------------------------------------------
+
+// Group chat keys (see groupKeys.js). `state` is only read when a method runs,
+// so creating the keyring before anything has happened is safe.
+const keyring = createKeyring({
+  api,
+  crypto: { generateGroupKey, wrapGroupKey, unwrapGroupKey, keyFingerprint: publicKeyFingerprint },
+  getMyPublicJwk: () => state.myPublicKeyJwk,
+});
 
 const $ = (id) => document.getElementById(id);
 
@@ -218,7 +233,98 @@ async function decryptIncomingDm(msg) {
 // Adds a `displayContent` field for rendering, without touching the
 // original `content`/`iv` — those stay as the raw values so sidebar preview
 // logic can tell encrypted from plain at a glance without decrypting.
+// Group messages are encrypted under a shared per-generation key (see groupKeys.js).
+async function decorateGroupMessage(msg) {
+  let key = keyring.get(msg.roomId, msg.epochIndex);
+  if (!key) {
+    try {
+      await keyring.load(msg.roomId);
+    } catch {
+      // offline, or no longer a member: fall through to the placeholder
+    }
+    key = keyring.get(msg.roomId, msg.epochIndex);
+  }
+  if (!key) {
+    return {
+      ...msg,
+      displayContent: keyring.hasAnyKey(msg.roomId)
+        ? '🔒 Sent before you joined, so it cannot be read.'
+        : '🔒 Waiting for a member to share the group key…',
+    };
+  }
+  const plaintext = await decryptGroupMessage(key, msg.content, msg.iv, msg.roomId, msg.epochIndex);
+  return { ...msg, displayContent: plaintext ?? '⚠️ Could not decrypt this message' };
+}
+
+// Encrypts for an encrypted group using the newest key generation we hold.
+// Returns null if we hold no key yet (a member has to share it with us first).
+async function prepareGroupPayload(room, plaintext) {
+  await keyring.load(room.id).catch(() => {});
+  const generation = keyring.currentGeneration(room.id);
+  const key = keyring.get(room.id, generation);
+  if (!key) return null;
+  const { ciphertext, iv } = await encryptGroupMessage(key, plaintext, room.id, generation);
+  return { content: ciphertext, iv, epochIndex: generation, keyMode: 'group' };
+}
+
+// Any member who holds the group key can hand it to newcomers, replace it after
+// someone leaves, and re-wrap it for members whose identity key changed.
+function runReconcile(room) {
+  if (!room || !room.isGroup || !room.encrypted) return;
+  keyring.reconcile(room).catch((err) => console.warn('Group key check failed:', err));
+}
+
+function handleGroupKeysNeeded({ roomId }) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) return;
+  // A little random delay so several online members do not all act at once
+  // (the server serialises key rotations anyway).
+  setTimeout(() => runReconcile(room), 100 + Math.random() * 900);
+}
+
+async function handleGroupKeysUpdated({ roomId, keyGeneration }) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) return;
+  room.keyGeneration = keyGeneration;
+  await keyring.load(roomId, { force: true }).catch(() => {});
+  const list = state.messagesByRoom.get(roomId);
+  if (list) state.messagesByRoom.set(roomId, await Promise.all(list.map(decorateWithDisplayContent)));
+  if (state.activeRoomId === roomId) {
+    updateComposerAvailability(room);
+    renderMessages(roomId);
+  }
+}
+
+function handleGroupSettingsUpdated({ roomId, joinPolicy, historyPolicy }) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) return;
+  room.joinPolicy = joinPolicy;
+  room.historyPolicy = historyPolicy;
+}
+
+function removeRoomLocally(roomId) {
+  state.rooms = state.rooms.filter((r) => r.id !== roomId);
+  state.messagesByRoom.delete(roomId);
+  state.roomPagination.delete(roomId);
+  keyring.forget(roomId);
+  if (state.activeRoomId === roomId) {
+    state.activeRoomId = null;
+    $('chat-active').classList.add('hidden');
+    $('chat-empty').classList.remove('hidden');
+    $('app-screen').classList.remove('show-chat');
+    $('members-panel').classList.add('hidden');
+  }
+  renderRoomLists();
+}
+
+function handleRoomRemoved({ roomId }) {
+  const known = state.rooms.some((r) => r.id === roomId);
+  removeRoomLocally(roomId);
+  if (known) showToast('You were removed from a group.');
+}
+
 async function decorateWithDisplayContent(msg) {
+  if (msg.keyMode === 'group') return decorateGroupMessage(msg);
   if (!msg.iv) {
     return { ...msg, displayContent: msg.content };
   }
@@ -260,9 +366,10 @@ function updateComposerAvailability(room) {
   const sendBtn = $('composer-send');
 
   if (room.isGroup) {
-    input.disabled = false;
-    sendBtn.disabled = false;
-    input.placeholder = 'Message…';
+    const waiting = !!room.encrypted && !keyring.hasCurrentKey(room.id);
+    input.disabled = waiting;
+    sendBtn.disabled = waiting;
+    input.placeholder = waiting ? 'Waiting for a member to share the group key…' : 'Message…';
     return;
   }
 
@@ -404,6 +511,13 @@ async function selectRoom(roomId) {
   emitSocket('room:subscribe', { roomId });
   markRoomRead(roomId);
 
+  if (room.isGroup && room.encrypted) {
+    // Load our keys first so messages decrypt, then help anyone waiting for theirs.
+    await keyring.load(roomId, { force: true }).catch(() => {});
+    if (state.activeRoomId === roomId) updateComposerAvailability(room);
+    runReconcile(room);
+  }
+
   if (!state.messagesByRoom.has(roomId)) {
     try {
       const data = await api.getMessages(roomId);
@@ -441,9 +555,11 @@ function renderChatHeader(room) {
   if (room.isGroup) {
     applyAvatar(avatarEl, room.name || 'Room', '#7C93C7');
     $('chat-title').textContent = `# ${room.name}`;
-    $('chat-subtitle').textContent = `${room.memberCount} member${room.memberCount === 1 ? '' : 's'}`;
+    $('chat-subtitle').textContent = `${room.memberCount} member${room.memberCount === 1 ? '' : 's'}${
+      room.encrypted ? ' · 🔒 encrypted' : ' · not encrypted'
+    }`;
     membersBtn.classList.remove('hidden');
-    encryptionBadge.classList.add('hidden');
+    encryptionBadge.classList.toggle('hidden', !room.encrypted);
   } else {
     const other = room.otherMember;
     applyAvatar(avatarEl, other?.username, other?.avatarColor);
@@ -572,7 +688,15 @@ function enterEditMode(msg, row) {
 
     let payload = { roomId: msg.roomId, messageId: msg.id, content: newContent };
     const room = state.rooms.find((r) => r.id === msg.roomId);
-    if (room && !room.isGroup) {
+    if (room && room.isGroup && room.encrypted) {
+      const encrypted = await prepareGroupPayload(room, newContent);
+      if (!encrypted) {
+        showToast('Cannot edit yet: the group key is not available.');
+        saveBtn.disabled = false;
+        return;
+      }
+      payload = { roomId: msg.roomId, messageId: msg.id, ...encrypted };
+    } else if (room && !room.isGroup) {
       const encrypted = await prepareEncryptedPayload(room, newContent);
       if (!encrypted) {
         showToast('Cannot edit — secure messaging is not ready for this conversation.');
@@ -830,6 +954,174 @@ function handlePresenceUpdate({ userId, online, lastSeenAt }) {
 // Members panel
 // ---------------------------------------------------------------------------
 
+async function refreshMembersPanel(room) {
+  const data = await api.getMembers(room.id);
+  room.memberCount = data.members.length;
+  renderMembersList(data.members);
+  renderGroupPanel(room, data.members);
+  renderChatHeader(room);
+  renderRoomLists();
+}
+
+// Group details inside the members panel: what the encryption settings are,
+// admin controls (settings, add people, remove people) and Leave.
+function renderGroupPanel(room, members) {
+  const box = $('group-panel-extra');
+  box.innerHTML = '';
+  const isAdmin = members.find((m) => m.id === state.me.id)?.role === 'admin';
+
+  const info = document.createElement('p');
+  info.className = 'group-note';
+  if (room.encrypted) {
+    const who = room.joinPolicy === 'invite' ? 'Invite-only.' : 'Anyone can join.';
+    const history =
+      room.historyPolicy === 'full'
+        ? 'New members can read the full history.'
+        : 'New members can only read messages sent after they join.';
+    info.textContent = `🔒 End-to-end encrypted. ${who} ${history} Groups have no forward secrecy.`;
+  } else {
+    info.textContent = 'This older group is not end-to-end encrypted. New groups always are.';
+  }
+  box.appendChild(info);
+
+  document.querySelectorAll('#members-list .member-row').forEach((row) => {
+    const m = members.find((x) => x.id === row.dataset.userId);
+    if (!m) return;
+    if (m.role === 'admin') {
+      const tag = document.createElement('span');
+      tag.className = 'role-tag';
+      tag.textContent = 'admin';
+      row.appendChild(tag);
+    }
+    if (isAdmin && m.id !== state.me.id) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-danger-text member-remove';
+      btn.textContent = 'Remove';
+      btn.addEventListener('click', async () => {
+        if (!window.confirm(`Remove ${m.username} from this group? They will not be able to read anything sent after this.`)) return;
+        try {
+          await api.removeGroupMember(room.id, m.id);
+          showToast(`${m.username} was removed.`);
+          await refreshMembersPanel(room);
+        } catch (err) {
+          showToast(err.message);
+        }
+      });
+      row.appendChild(btn);
+    }
+  });
+
+  if (isAdmin) {
+    const settings = document.createElement('div');
+    settings.className = 'group-section';
+    settings.innerHTML = `
+      <h3>Group settings</h3>
+      <div class="field">
+        <label for="gs-join">Who can join</label>
+        <select id="gs-join">
+          <option value="open">Anyone (listed in Browse rooms)</option>
+          <option value="invite">Invite-only (admin adds people)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="gs-history">What new members can read</label>
+        <select id="gs-history">
+          <option value="after_join">Only messages sent after they join</option>
+          <option value="full">The full history</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-ghost" id="gs-save">Save settings</button>
+      <div class="field-hint">Changes apply to people who join from now on.</div>`;
+    box.appendChild(settings);
+    $('gs-join').value = room.joinPolicy || 'open';
+    $('gs-history').value = room.historyPolicy || 'after_join';
+    $('gs-save').addEventListener('click', async () => {
+      try {
+        const saved = await api.updateGroupSettings(room.id, {
+          joinPolicy: $('gs-join').value,
+          historyPolicy: $('gs-history').value,
+        });
+        room.joinPolicy = saved.joinPolicy;
+        room.historyPolicy = saved.historyPolicy;
+        showToast('Settings saved.');
+        await refreshMembersPanel(room);
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+
+    const add = document.createElement('div');
+    add.className = 'group-section';
+    add.innerHTML = `
+      <h3>Add people</h3>
+      <div class="field"><input id="gs-add-search" type="text" placeholder="Search by username" autocomplete="off" /></div>
+      <div class="group-add-results" id="gs-add-results"></div>`;
+    box.appendChild(add);
+    let timer = null;
+    $('gs-add-search').addEventListener('input', (e) => {
+      clearTimeout(timer);
+      const q = e.target.value.trim();
+      const results = $('gs-add-results');
+      if (!q) {
+        results.innerHTML = '';
+        return;
+      }
+      timer = setTimeout(async () => {
+        try {
+          const data = await api.searchUsers(q);
+          results.innerHTML = '';
+          const inGroup = new Set(members.map((m) => m.id));
+          const found = data.users.filter((u) => !inGroup.has(u.id));
+          if (found.length === 0) {
+            results.appendChild(emptyNote('No one to add.'));
+            return;
+          }
+          found.forEach((u) => {
+            const row = document.createElement('div');
+            row.className = 'group-add-row';
+            const label = document.createElement('span');
+            label.textContent = u.username;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-ghost';
+            btn.textContent = 'Add';
+            btn.addEventListener('click', async () => {
+              try {
+                await api.addGroupMember(room.id, u.id);
+                showToast(`${u.username} was added.`);
+                await refreshMembersPanel(room);
+              } catch (err) {
+                showToast(err.message);
+              }
+            });
+            row.append(label, btn);
+            results.appendChild(row);
+          });
+        } catch (err) {
+          showToast(err.message);
+        }
+      }, 250);
+    });
+  }
+
+  const leave = document.createElement('button');
+  leave.type = 'button';
+  leave.className = 'btn btn-danger-text group-leave';
+  leave.textContent = 'Leave group';
+  leave.addEventListener('click', async () => {
+    if (!window.confirm('Leave this group? You will not be able to read anything sent after you leave.')) return;
+    try {
+      await api.leaveRoom(room.id);
+      removeRoomLocally(room.id);
+      showToast('You left the group.');
+    } catch (err) {
+      showToast(err.message);
+    }
+  });
+  box.appendChild(leave);
+}
+
 function renderMembersList(members) {
   const list = $('members-list');
   list.innerHTML = '';
@@ -868,6 +1160,7 @@ $('members-btn').addEventListener('click', async () => {
   try {
     const data = await api.getMembers(room.id);
     renderMembersList(data.members);
+    renderGroupPanel(room, data.members);
     panel.classList.remove('hidden');
   } catch (err) {
     showToast(err.message);
@@ -876,7 +1169,11 @@ $('members-btn').addEventListener('click', async () => {
 
 $('encryption-badge').addEventListener('click', async () => {
   const room = state.rooms.find((r) => r.id === state.activeRoomId);
-  if (!room || room.isGroup || !room.otherMember?.publicKey || !state.myPublicKeyJwk) return;
+  if (room && room.isGroup) {
+    $('members-btn').click(); // the members panel doubles as the group's encryption details
+    return;
+  }
+  if (!room || !room.otherMember?.publicKey || !state.myPublicKeyJwk) return;
   try {
     const code = await computeSafetyNumber(state.me.id, state.myPublicKeyJwk, room.otherMember.id, room.otherMember.publicKey);
     const bothStrict = state.me.securityMode === 'strict' && room.otherMember.securityMode === 'strict';
@@ -964,8 +1261,22 @@ $('new-room-form').addEventListener('submit', async (e) => {
   const name = input.value.trim();
   if (!name) return;
   try {
-    const data = await api.createGroup(name);
-    upsertRoom({ id: data.room.id, name: data.room.name, isGroup: true, createdAt: data.room.createdAt, memberCount: 1 });
+    if (!state.myPublicKeyJwk) {
+      showToast('Your encryption key is not ready yet. Try again in a moment.');
+      return;
+    }
+    // The room id is chosen here because the group key's wrap is bound to it.
+    const roomId = crypto.randomUUID();
+    const { key, wrap } = await keyring.prepareNewGroup(roomId);
+    const data = await api.createGroup({
+      id: roomId,
+      name,
+      joinPolicy: $('new-room-join').value,
+      historyPolicy: $('new-room-history').value,
+      key: wrap,
+    });
+    keyring.remember(roomId, 1, key);
+    upsertRoom({ ...data.room, memberCount: 1 });
     emitSocket('room:subscribe', { roomId: data.room.id });
     input.value = '';
     closeModal('new-room-modal');
@@ -999,10 +1310,12 @@ function renderJoinableList(rooms) {
 
     const info = document.createElement('div');
     const nameEl = document.createElement('span');
-    nameEl.textContent = r.name;
+    nameEl.textContent = r.encrypted ? `🔒 ${r.name}` : r.name;
     const countEl = document.createElement('span');
     countEl.className = 'count';
-    countEl.textContent = ` · ${r.memberCount} member${r.memberCount === 1 ? '' : 's'}`;
+    countEl.textContent = ` · ${r.memberCount} member${r.memberCount === 1 ? '' : 's'}${
+      r.encrypted ? (r.historyPolicy === 'full' ? ' · full history' : ' · history from when you join') : ' · not encrypted'
+    }`;
     info.append(nameEl, countEl);
 
     const joinBtn = document.createElement('button');
@@ -1011,14 +1324,8 @@ function renderJoinableList(rooms) {
     joinBtn.textContent = 'Join';
     joinBtn.addEventListener('click', async () => {
       try {
-        await api.joinRoom(r.id);
-        upsertRoom({
-          id: r.id,
-          name: r.name,
-          isGroup: true,
-          createdAt: r.createdAt,
-          memberCount: r.memberCount + 1,
-        });
+        const joined = await api.joinRoom(r.id);
+        upsertRoom(joined.room);
         emitSocket('room:subscribe', { roomId: r.id });
         renderRoomLists();
         closeModal('browse-rooms-modal');
@@ -1086,7 +1393,14 @@ composerForm.addEventListener('submit', async (e) => {
   const room = state.rooms.find((r) => r.id === roomId);
   let payload = { roomId, content };
 
-  if (room && !room.isGroup) {
+  if (room && room.isGroup && room.encrypted) {
+    const encrypted = await prepareGroupPayload(room, content);
+    if (!encrypted) {
+      showToast('Cannot send yet: waiting for a member to share the group key.');
+      return;
+    }
+    payload = { roomId, ...encrypted };
+  } else if (room && !room.isGroup) {
     const encrypted = await prepareEncryptedPayload(room, content);
     if (!encrypted) {
       showToast('Cannot send yet — secure messaging is not ready for this conversation.');
@@ -1224,6 +1538,7 @@ $('logout-btn').addEventListener('click', async () => {
   clearInterval(epochKeyTimer);
   state.me = null;
   setKeyOwner(null);
+  keyring.clear();
   state.rooms = [];
   state.activeRoomId = null;
   state.messagesByRoom.clear();
@@ -1293,11 +1608,19 @@ async function initApp(user) {
   onSocket('presence:update', handlePresenceUpdate);
   onSocket('typing:update', handleTypingUpdate);
   onSocket('room:new', handleNewRoom);
+  onSocket('group:keys-needed', handleGroupKeysNeeded);
+  onSocket('group:keys-updated', handleGroupKeysUpdated);
+  onSocket('group:settings-updated', handleGroupSettingsUpdated);
+  onSocket('room:removed', handleRoomRemoved);
 
   try {
     const data = await api.listRooms();
     state.rooms = data.rooms;
     renderRoomLists();
+    // Encrypted groups: if someone is waiting for a key we hold, hand it over.
+    state.rooms
+      .filter((r) => r.isGroup && r.encrypted)
+      .forEach((r, i) => setTimeout(() => runReconcile(r), 800 + i * 400 + Math.random() * 600));
   } catch {
     showToast('Could not load your conversations.');
   }

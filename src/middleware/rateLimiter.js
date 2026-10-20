@@ -16,7 +16,7 @@ const authLimiter = rateLimit({
 // Looser general-purpose limiter for the rest of the REST API.
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 120,
+  limit: Number(process.env.API_RATE_LIMIT_MAX) || 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests. Please slow down.' },

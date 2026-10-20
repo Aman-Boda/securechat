@@ -187,6 +187,7 @@
         <div class="members-panel hidden" id="members-panel">
           <h3>Members</h3>
           <div id="members-list"></div>
+          <div id="group-panel-extra"></div>
         </div>
       </div>
     </main>
@@ -196,11 +197,26 @@
   <div id="new-room-modal" class="modal-backdrop hidden">
     <div class="modal">
       <h2>Create a room</h2>
-      <p>Anyone can find and join it from "Browse rooms".</p>
+      <p>Messages are end-to-end encrypted. You decide who can join and what new members can read.</p>
       <form id="new-room-form">
         <div class="field">
           <label for="new-room-name">Room name</label>
           <input id="new-room-name" type="text" minlength="2" maxlength="40" required />
+        </div>
+        <div class="field">
+          <label for="new-room-join">Who can join</label>
+          <select id="new-room-join">
+            <option value="open">Anyone (listed in Browse rooms)</option>
+            <option value="invite">Invite-only (you add people)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="new-room-history">What new members can read</label>
+          <select id="new-room-history">
+            <option value="after_join">Only messages sent after they join</option>
+            <option value="full">The full history</option>
+          </select>
+          <div class="field-hint">You can change both later in the group's member panel.</div>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-ghost" data-close-modal>Cancel</button>

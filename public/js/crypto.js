@@ -545,3 +545,81 @@ export async function purgeLegacyEphemeralKeys() {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Group chat keys.
+//
+// A group's shared AES-256-GCM key is never sent anywhere in the clear. To give
+// a member a copy it is WRAPPED: a fresh one-time ECDH key pair is combined with
+// the member's long-term identity public key, and the group key is encrypted
+// under the result. Only the holder of that identity private key can unwrap it.
+// Both wraps and messages are bound (AES-GCM additional data) to the room and
+// key generation, so the server cannot swap one room's key or ciphertext into
+// another. Unlike DMs there is no forward secrecy here: the wrap depends on the
+// member's permanent identity key.
+// ---------------------------------------------------------------------------
+
+export function publicKeyFingerprint(jwk) {
+  return keyFingerprint(jwk);
+}
+
+function groupAad(roomId, generation) {
+  return new TextEncoder().encode(`securechat-group|${roomId}|${generation}`);
+}
+
+export function generateGroupKey() {
+  return crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+}
+
+export async function wrapGroupKey(groupKey, recipientPublicJwk, roomId, generation) {
+  const ephemeral = await crypto.subtle.generateKey(EC_PARAMS, true, ['deriveKey']);
+  const wrapKey = await deriveSharedKey(ephemeral.privateKey, recipientPublicJwk);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const raw = await crypto.subtle.exportKey('raw', groupKey);
+  const wrapped = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: groupAad(roomId, generation) },
+    wrapKey,
+    raw
+  );
+  return {
+    wrappedKey: bufToBase64(wrapped),
+    iv: bufToBase64(iv),
+    wrapperPublicKey: await exportPublicKeyJwk(ephemeral.publicKey),
+    wrappedForFp: keyFingerprint(recipientPublicJwk),
+  };
+}
+
+// Throws if the wrap was not made for our identity key or was tampered with.
+export async function unwrapGroupKey({ wrappedKey, iv, wrapperPublicKey }, roomId, generation) {
+  const identity = await getOrCreateKeyPair();
+  const wrapKey = await deriveSharedKey(identity.privateKey, wrapperPublicKey);
+  const raw = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64ToBuf(iv), additionalData: groupAad(roomId, generation) },
+    wrapKey,
+    base64ToBuf(wrappedKey)
+  );
+  return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+}
+
+export async function encryptGroupMessage(groupKey, plaintext, roomId, generation) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: groupAad(roomId, generation) },
+    groupKey,
+    new TextEncoder().encode(plaintext)
+  );
+  return { ciphertext: bufToBase64(ciphertext), iv: bufToBase64(iv) };
+}
+
+export async function decryptGroupMessage(groupKey, ciphertextB64, ivB64, roomId, generation) {
+  try {
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: base64ToBuf(ivB64), additionalData: groupAad(roomId, generation) },
+      groupKey,
+      base64ToBuf(ciphertextB64)
+    );
+    return new TextDecoder().decode(plain);
+  } catch {
+    return null;
+  }
+}

@@ -1,5 +1,6 @@
 const messageRepo = require('../db/repositories/messageRepo');
 const { sanitizeMessageContent } = require('../utils/sanitize');
+const { validateGroupPayload } = require('../utils/groupPayload');
 
 const MAX_CIPHERTEXT_LENGTH = 8000; // generous — encrypted content is ~33% larger than plaintext, plus overhead
 
@@ -55,6 +56,14 @@ async function send(req, res) {
     return res.status(201).json({ message });
   }
 
+  if (req.room.encrypted) {
+    const parsed = await validateGroupPayload(req.room, req.body, req.user.id);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const message = await messageRepo.createMessage({ ...parsed, senderId: req.user.id, roomId: req.room.id });
+    req.app.get('io').to(`room:${req.room.id}`).emit('message:new', message);
+    return res.status(201).json({ message });
+  }
+
   const clean = sanitizeMessageContent(req.body.content);
   if (!clean) {
     return res.status(400).json({ error: 'Message cannot be empty.' });
@@ -89,6 +98,10 @@ async function edit(req, res) {
   let updated;
   if (!req.room.is_group) {
     const parsed = validateEncryptedPayload(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    updated = await messageRepo.updateMessage(message.id, parsed);
+  } else if (req.room.encrypted) {
+    const parsed = await validateGroupPayload(req.room, req.body, req.user.id);
     if (parsed.error) return res.status(400).json({ error: parsed.error });
     updated = await messageRepo.updateMessage(message.id, parsed);
   } else {

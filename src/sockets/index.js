@@ -2,6 +2,7 @@ const { verifyToken, COOKIE_NAME } = require('../utils/jwt');
 const userRepo = require('../db/repositories/userRepo');
 const roomRepo = require('../db/repositories/roomRepo');
 const messageRepo = require('../db/repositories/messageRepo');
+const { validateGroupPayload } = require('../utils/groupPayload');
 const { sanitizeMessageContent } = require('../utils/sanitize');
 
 // userId -> Set<socketId>. Lets a user have multiple tabs/devices open
@@ -143,6 +144,12 @@ function initSockets(io) {
             senderId: user.id,
             roomId,
           });
+        } else if (room.encrypted) {
+          // Encrypted group: same rule as DMs, the server only checks the shape
+          // and that the sender holds the key generation they used.
+          const parsed = await validateGroupPayload(room, { content, iv, epochIndex, keyMode }, user.id);
+          if (parsed.error) return reply({ error: parsed.error });
+          message = await messageRepo.createMessage({ ...parsed, senderId: user.id, roomId });
         } else {
           const clean = sanitizeMessageContent(content);
           if (!clean) return reply({ error: 'Message cannot be empty.' });
@@ -186,6 +193,10 @@ function initSockets(io) {
             return reply({ error: "keyMode must be 'mutual' or 'identity'." });
           }
           updated = await messageRepo.updateMessage(messageId, { content, iv, epochIndex, senderEpochPublicKey, keyMode });
+        } else if (room.encrypted) {
+          const parsed = await validateGroupPayload(room, { content, iv, epochIndex, keyMode }, user.id);
+          if (parsed.error) return reply({ error: parsed.error });
+          updated = await messageRepo.updateMessage(messageId, parsed);
         } else {
           const clean = sanitizeMessageContent(content);
           if (!clean) return reply({ error: 'Message cannot be empty.' });
