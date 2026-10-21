@@ -59,6 +59,7 @@ export function createKeyring({ api, crypto: c, getMyPublicJwk }) {
     const e = rooms.get(roomId);
     return !!(e && e.keyGeneration > 0 && e.keys.has(e.keyGeneration));
   };
+  const isLoaded = (roomId) => !!(rooms.get(roomId) && rooms.get(roomId).loadedAt);
   const hasAnyKey = (roomId) => !!(rooms.get(roomId) && rooms.get(roomId).keys.size > 0);
 
   function remember(roomId, generation, key) {
@@ -147,5 +148,5 @@ export function createKeyring({ api, crypto: c, getMyPublicJwk }) {
   const forget = (roomId) => rooms.delete(roomId);
   const clear = () => rooms.clear();
 
-  return { load, get, currentGeneration, hasCurrentKey, hasAnyKey, remember, prepareNewGroup, reconcile, forget, clear };
+  return { load, get, currentGeneration, hasCurrentKey, hasAnyKey, isLoaded, remember, prepareNewGroup, reconcile, forget, clear };
 }

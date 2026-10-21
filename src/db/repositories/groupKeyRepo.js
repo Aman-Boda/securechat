@@ -27,6 +27,15 @@ async function getMemberRole(roomId, userId) {
   return r.rows[0] ? r.rows[0].role : null;
 }
 
+async function listEncryptedRoomIds(userId) {
+  const r = await pool.query(
+    `SELECT r.id FROM rooms r JOIN room_memberships m ON m.room_id = r.id
+     WHERE m.user_id = $1 AND r.encrypted = true`,
+    [userId]
+  );
+  return r.rows.map((row) => row.id);
+}
+
 async function countMembers(roomId) {
   const r = await pool.query('SELECT COUNT(*)::int AS count FROM room_memberships WHERE room_id = $1', [roomId]);
   return r.rows[0].count;
@@ -273,6 +282,7 @@ module.exports = {
   KeyUploadError,
   fingerprintOf,
   getMemberRole,
+  listEncryptedRoomIds,
   countMembers,
   hasKey,
   getKeysForUser,

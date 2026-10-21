@@ -245,11 +245,12 @@ async function decorateGroupMessage(msg) {
     key = keyring.get(msg.roomId, msg.epochIndex);
   }
   if (!key) {
+    const beforeJoin = keyring.hasAnyKey(msg.roomId);
     return {
       ...msg,
-      displayContent: keyring.hasAnyKey(msg.roomId)
-        ? '🔒 Sent before you joined, so it cannot be read.'
-        : '🔒 Waiting for a member to share the group key…',
+      // renderMessages folds these into one note / the banner instead of a wall of bubbles
+      undecryptable: beforeJoin ? 'before-join' : 'waiting',
+      displayContent: beforeJoin ? '🔒 Sent before you joined, so it cannot be read.' : '🔒 Waiting for the group key…',
     };
   }
   const plaintext = await decryptGroupMessage(key, msg.content, msg.iv, msg.roomId, msg.epochIndex);
@@ -269,6 +270,18 @@ async function prepareGroupPayload(room, plaintext) {
 
 // Any member who holds the group key can hand it to newcomers, replace it after
 // someone leaves, and re-wrap it for members whose identity key changed.
+// Joins and departures change the member count without any chat event: keep the header honest.
+async function refreshMemberCount(room) {
+  try {
+    const data = await api.getMembers(room.id);
+    room.memberCount = data.members.length;
+    if (state.activeRoomId === room.id) renderChatHeader(room);
+    renderRoomLists();
+  } catch {
+    // not fatal: the count refreshes next time the members panel opens
+  }
+}
+
 function runReconcile(room) {
   if (!room || !room.isGroup || !room.encrypted) return;
   keyring.reconcile(room).catch((err) => console.warn('Group key check failed:', err));
@@ -277,6 +290,7 @@ function runReconcile(room) {
 function handleGroupKeysNeeded({ roomId }) {
   const room = state.rooms.find((r) => r.id === roomId);
   if (!room) return;
+  refreshMemberCount(room);
   // A little random delay so several online members do not all act at once
   // (the server serialises key rotations anyway).
   setTimeout(() => runReconcile(room), 100 + Math.random() * 900);
@@ -286,6 +300,7 @@ async function handleGroupKeysUpdated({ roomId, keyGeneration }) {
   const room = state.rooms.find((r) => r.id === roomId);
   if (!room) return;
   room.keyGeneration = keyGeneration;
+  refreshMemberCount(room);
   await keyring.load(roomId, { force: true }).catch(() => {});
   const list = state.messagesByRoom.get(roomId);
   if (list) state.messagesByRoom.set(roomId, await Promise.all(list.map(decorateWithDisplayContent)));
@@ -361,7 +376,17 @@ function showSafetyNumberModal(username, code, fsNote = '') {
 // Enables/disables the composer based on whether we can actually encrypt to
 // this room's partner yet (always enabled for group rooms, which aren't
 // encrypted in this version).
+function updateKeyBanner(room) {
+  const banner = $('key-banner');
+  const waiting = !!room && room.isGroup && !!room.encrypted && keyring.isLoaded(room.id) && !keyring.hasCurrentKey(room.id);
+  banner.classList.toggle('hidden', !waiting);
+  if (waiting) {
+    banner.textContent = '🔒 Waiting for a member to share this group’s key. Messages appear as soon as it arrives.';
+  }
+}
+
 function updateComposerAvailability(room) {
+  updateKeyBanner(room);
   const input = $('composer-input');
   const sendBtn = $('composer-send');
 
@@ -369,7 +394,7 @@ function updateComposerAvailability(room) {
     const waiting = !!room.encrypted && !keyring.hasCurrentKey(room.id);
     input.disabled = waiting;
     sendBtn.disabled = waiting;
-    input.placeholder = waiting ? 'Waiting for a member to share the group key…' : 'Message…';
+    input.placeholder = waiting ? 'Waiting for the group key…' : 'Message…';
     return;
   }
 
@@ -560,6 +585,7 @@ function renderChatHeader(room) {
     }`;
     membersBtn.classList.remove('hidden');
     encryptionBadge.classList.toggle('hidden', !room.encrypted);
+    encryptionBadge.title = 'Group encryption details';
   } else {
     const other = room.otherMember;
     applyAvatar(avatarEl, other?.username, other?.avatarColor);
@@ -576,6 +602,7 @@ function renderChatHeader(room) {
       : '';
     membersBtn.classList.add('hidden');
     encryptionBadge.classList.toggle('hidden', !other?.publicKey);
+    encryptionBadge.title = 'View safety number';
   }
 }
 
@@ -748,6 +775,8 @@ function renderMessages(roomId, { anchorToBottom = null } = {}) {
   container.innerHTML = '';
   const messages = state.messagesByRoom.get(roomId) || [];
   let lastDay = null;
+  let gapEl = null;
+  let gapCount = 0;
   messages.forEach((msg) => {
     const day = formatDay(msg.createdAt);
     if (day !== lastDay) {
@@ -757,6 +786,20 @@ function renderMessages(roomId, { anchorToBottom = null } = {}) {
       container.appendChild(divider);
       lastDay = day;
     }
+    if (msg.undecryptable === 'waiting') return; // the banner above the messages explains this
+    if (msg.undecryptable === 'before-join') {
+      // Consecutive unreadable messages become ONE quiet note.
+      gapCount += 1;
+      if (!gapEl) {
+        gapEl = document.createElement('div');
+        gapEl.className = 'msg-gap';
+        container.appendChild(gapEl);
+      }
+      gapEl.textContent = `🔒 ${gapCount} earlier message${gapCount === 1 ? '' : 's'} from before you joined`;
+      return;
+    }
+    gapEl = null;
+    gapCount = 0;
     container.appendChild(renderMessageRow(msg));
   });
 
@@ -1670,6 +1713,11 @@ function renderSettingsModal() {
     'On Maximum Security a backup only covers the last 30 days; older keys are already permanently deleted from this device.';
   note.classList.toggle('hidden', mode !== 'strict');
 }
+
+$('members-close').addEventListener('click', () => $('members-panel').classList.add('hidden'));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') $('members-panel').classList.add('hidden');
+});
 
 $('settings-btn').addEventListener('click', () => {
   renderSettingsModal();

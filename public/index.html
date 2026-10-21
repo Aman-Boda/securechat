@@ -89,7 +89,7 @@
         <h1 class="auth-heading">Reset your password</h1>
         <p class="auth-subheading">We'll email you a link to set a new one.</p>
         <div id="forgot-password-error" class="form-error hidden"></div>
-        <div id="forgot-password-success" class="hidden" style="font-size:13px; color:var(--accent-strong); margin-bottom:16px;"></div>
+        <div id="forgot-password-success" class="hidden success-note"></div>
         <div class="field">
           <label for="forgot-password-email">Email</label>
           <input id="forgot-password-email" name="email" type="email" autocomplete="email" required />
@@ -117,8 +117,8 @@
   <div id="app-screen" class="app hidden">
     <aside class="sidebar">
       <div class="sidebar-header">
-        <div class="brand-mark" style="width:26px;height:26px;">
-          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:14px;height:14px;">
+        <div class="brand-mark brand-mark-sm">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M4 5C4 4.44772 4.44772 4 5 4H16C16.5523 4 17 4.44772 17 5V13C17 13.5523 16.5523 14 16 14H9L5.5 17V14H5C4.44772 14 4 13.5523 4 13V5Z" fill="#0D1120"/>
           </svg>
         </div>
@@ -144,8 +144,8 @@
         <div class="sidebar-section">
           <span class="sidebar-section-title">Rooms</span>
           <div>
-            <button class="icon-btn" id="browse-rooms-btn" title="Browse rooms">⌕</button>
-            <button class="icon-btn" id="new-room-btn" title="New room">+</button>
+            <button class="icon-btn" id="browse-rooms-btn" title="Browse rooms" aria-label="Browse rooms"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+            <button class="icon-btn" id="new-room-btn" title="New room" aria-label="New room"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
           </div>
         </div>
         <div id="room-list"></div>
@@ -154,8 +154,8 @@
       <div class="sidebar-footer">
         <div class="avatar sm" id="me-avatar"></div>
         <span class="me-name" id="me-name"></span>
-        <button class="icon-btn" id="settings-btn" title="Security settings">⚙</button>
-        <button class="icon-btn" id="logout-btn" title="Log out">⎋</button>
+        <button class="icon-btn" id="settings-btn" title="Security settings" aria-label="Security settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6l7-3z"/></svg></button>
+        <button class="icon-btn" id="logout-btn" title="Log out" aria-label="Log out"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 17l5-5-5-5"/><path d="M20 12H9"/><path d="M12 21H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h7"/></svg></button>
       </div>
     </aside>
 
@@ -168,14 +168,15 @@
         <div class="chat-header">
           <button class="back-btn" id="back-btn">←</button>
           <div class="avatar sm" id="chat-avatar"></div>
-          <div style="flex:1; min-width:0;">
+          <div class="chat-title-block">
             <div class="chat-header-title" id="chat-title"></div>
             <div class="chat-header-sub" id="chat-subtitle"></div>
           </div>
-          <button class="icon-btn hidden" id="encryption-badge" title="View safety number">🔒</button>
-          <button class="icon-btn" id="members-btn" title="Members">☰</button>
+          <button class="icon-btn hidden" id="encryption-badge" title="View safety number" aria-label="Encryption details"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button>
+          <button class="icon-btn" id="members-btn" title="Members and group settings" aria-label="Members"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.5 0 4.5 2 4.5 4.5"/></svg></button>
         </div>
 
+        <div class="key-banner hidden" id="key-banner"></div>
         <div class="messages-scroll" id="messages-scroll"></div>
         <div class="typing-indicator" id="typing-indicator"></div>
 
@@ -186,6 +187,7 @@
 
         <div class="members-panel hidden" id="members-panel">
           <h3>Members</h3>
+          <button type="button" class="modal-close" id="members-close" aria-label="Close members panel">×</button>
           <div id="members-list"></div>
           <div id="group-panel-extra"></div>
         </div>
@@ -258,6 +260,7 @@
   <!-- ============ SECURITY SETTINGS MODAL ============ -->
   <div id="settings-modal" class="modal-backdrop hidden">
     <div class="modal settings-modal">
+      <button type="button" class="modal-close" data-close-modal aria-label="Close">×</button>
       <h2>Security settings</h2>
 
       <div class="settings-section">

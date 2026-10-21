@@ -1133,3 +1133,130 @@ a {
 .group-leave {
   margin-top: 18px;
 }
+
+/* ---- UI polish (replaces inline styles the strict CSP was blocking) ---- */
+.success-note {
+  font-size: 13px;
+  color: var(--accent-strong);
+  margin-bottom: 16px;
+}
+
+.brand-mark.brand-mark-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.brand-mark.brand-mark-sm svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-title-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-header-title,
+.chat-header-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* the global ".field input" rule stretched the radio buttons to full width */
+.field .security-mode-card input[type='radio'] {
+  width: auto;
+  padding: 0;
+  margin: 3px 0 0;
+  flex-shrink: 0;
+}
+
+.btn.btn-ghost {
+  border: 1px solid var(--border);
+}
+
+.btn.btn-ghost:hover:not(:disabled) {
+  border-color: var(--text-faint);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+.icon-btn.hidden {
+  display: none;
+}
+
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+#encryption-badge {
+  color: var(--accent);
+}
+
+.key-banner {
+  padding: 10px 20px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.key-banner.hidden {
+  display: none;
+}
+
+.msg-gap {
+  display: block;
+  width: fit-content;
+  max-width: 90%;
+  margin: 10px auto;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-faint);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  text-align: center;
+}
+
+.settings-modal {
+  position: relative;
+}
+
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.modal-close:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* the card is a <label>, and the global ".field label" rule made it display:block (stacking the radio above the text) */
+.field .security-mode-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+}
+
+.group-leave {
+  padding-left: 0;
+}

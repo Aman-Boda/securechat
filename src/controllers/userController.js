@@ -1,6 +1,7 @@
 const userRepo = require('../db/repositories/userRepo');
 const epochKeyRepo = require('../db/repositories/epochKeyRepo');
 const keyBackupRepo = require('../db/repositories/keyBackupRepo');
+const groupKeyRepo = require('../db/repositories/groupKeyRepo');
 
 async function search(req, res) {
   const query = (req.query.q || '').toString().trim();
@@ -29,7 +30,18 @@ async function setPublicKey(req, res) {
   if (!publicKey || typeof publicKey !== 'object' || Array.isArray(publicKey)) {
     return res.status(400).json({ error: 'publicKey must be a JWK object.' });
   }
+  const before = await userRepo.findById(req.user.id);
+  const previous = before && before.public_key ? JSON.parse(before.public_key) : null;
   await userRepo.setPublicKey(req.user.id, publicKey);
+  // A changed identity key (for example logging in on a new device) makes this
+  // person's copy of every encrypted group's key stale. Tell those groups so a
+  // member who is online and holds the key can re-wrap it straight away.
+  if (previous && (previous.x !== publicKey.x || previous.y !== publicKey.y)) {
+    const io = req.app.get('io');
+    for (const roomId of await groupKeyRepo.listEncryptedRoomIds(req.user.id)) {
+      io.to(`room:${roomId}`).emit('group:keys-needed', { roomId });
+    }
+  }
   return res.status(204).send();
 }
 
