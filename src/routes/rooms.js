@@ -7,6 +7,8 @@ const { validate } = require('../middleware/validate');
 const { asyncHandler } = require('../utils/asyncHandler');
 const roomController = require('../controllers/roomController');
 const groupController = require('../controllers/groupController');
+const attachmentController = require('../controllers/attachmentController');
+const reactionController = require('../controllers/reactionController');
 const messagesRouter = require('./messages');
 
 const router = express.Router();
@@ -42,6 +44,9 @@ router.patch('/:roomId/settings', requireRoomMembership, asyncHandler(groupContr
 router.get('/:roomId/keys', requireRoomMembership, asyncHandler(groupController.getMyKeys));
 router.get('/:roomId/key-status', requireRoomMembership, asyncHandler(groupController.getKeyStatus));
 router.put('/:roomId/keys', requireRoomMembership, asyncHandler(groupController.putKeys));
+router.get('/:roomId/attachments/:attachmentId', requireRoomMembership, asyncHandler(attachmentController.download));
+router.put('/:roomId/messages/:messageId/reaction', requireRoomMembership, asyncHandler(reactionController.put));
+router.delete('/:roomId/messages/:messageId/reaction', requireRoomMembership, asyncHandler(reactionController.del));
 router.use('/:roomId/messages', requireRoomMembership, messagesRouter);
 
 module.exports = router;

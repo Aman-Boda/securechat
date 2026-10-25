@@ -33,4 +33,13 @@ const backupLimiter = rateLimit({
   message: { error: 'Too many backup uploads. Please try again later.' },
 });
 
-module.exports = { authLimiter, apiLimiter, backupLimiter };
+// Image uploads are the heaviest request this app takes, so they get their own cap.
+const attachmentLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: Number(process.env.UPLOAD_RATE_LIMIT_MAX) || 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many image uploads. Please try again later.' },
+});
+
+module.exports = { authLimiter, apiLimiter, backupLimiter, attachmentLimiter };

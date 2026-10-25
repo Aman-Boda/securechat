@@ -23,6 +23,8 @@ import {
   publicKeyFingerprint,
 } from './crypto.js';
 import { createKeyring } from './groupKeys.js';
+import { buildEnvelopeText, parseEnvelope } from './envelope.js';
+import { encryptAttachmentBytes, decryptAttachmentBytes, resizeImageFile } from './attachments.js';
 
 const state = {
   me: null,
@@ -53,6 +55,9 @@ const keyring = createKeyring({
   crypto: { generateGroupKey, wrapGroupKey, unwrapGroupKey, keyFingerprint: publicKeyFingerprint },
   getMyPublicJwk: () => state.myPublicKeyJwk,
 });
+
+// What is being composed besides text: a reply target and up to four images.
+const composerExtras = { reply: null, images: [], roomId: null };
 
 const $ = (id) => document.getElementById(id);
 
@@ -213,7 +218,30 @@ async function prepareEncryptedPayload(room, plaintext) {
 // returns null, which is forward secrecy doing exactly what it's for, not
 // a bug. 'identity' messages use our long-term identity key, which is
 // always available.
+// A DM I SENT myself. It was encrypted with MY epoch key paired with THE OTHER
+// person's key, so I must rebuild exactly that pairing to read it again. (The
+// pairing the recipient uses, their key with my epoch PUBLIC key, is not available
+// to me.) This only works while I still hold that epoch's private key, which is
+// exactly the forward-secrecy rule: a deleted key means an unreadable message.
+async function decryptOwnDm(msg) {
+  const myEph = await getEphemeralPrivateKeyForEpoch(msg.epochIndex);
+  if (!myEph) return null;
+  const room = state.rooms.find((r) => r.id === msg.roomId);
+  if (!room || room.isGroup || !room.otherMember) return null;
+  let theirPublic = null;
+  if (msg.keyMode === 'mutual') theirPublic = await fetchTheirEpochKey(room.otherMember.id, msg.epochIndex);
+  else if (msg.keyMode === 'identity') theirPublic = room.otherMember.publicKey;
+  if (!theirPublic) return null;
+  const sharedKey = await getCachedDerivedKey(
+    `own:${msg.epochIndex}:${msg.keyMode}:${theirPublic.x}:${theirPublic.y}`,
+    myEph,
+    theirPublic
+  );
+  return decryptText(sharedKey, msg.content, msg.iv);
+}
+
 async function decryptIncomingDm(msg) {
+  if (msg.senderId === state.me.id) return decryptOwnDm(msg);
   let myKey;
   if (msg.keyMode === 'mutual') {
     myKey = await getEphemeralPrivateKeyForEpoch(msg.epochIndex);
@@ -338,7 +366,34 @@ function handleRoomRemoved({ roomId }) {
   if (known) showToast('You were removed from a group.');
 }
 
+// Reactions are encrypted exactly like messages: decrypt each one to its emoji.
+async function decodeReactions(roomId, reactions) {
+  const decoded = await Promise.all(
+    (reactions || []).map(async (r) => {
+      const d = await decorateContentOnly({ ...r, roomId, senderId: r.userId });
+      const emoji = typeof d.displayContent === 'string' ? d.displayContent.trim() : '';
+      if (!emoji || d.undecryptable || emoji.length > 16 || emoji.startsWith('⚠️') || emoji.startsWith('🔒')) return null;
+      return { userId: r.userId, username: r.username, emoji };
+    })
+  );
+  return decoded.filter(Boolean);
+}
+
+// Replies and image info live INSIDE the encrypted text (see envelope.js).
+async function enrichMessage(msg) {
+  let out = msg;
+  if (msg.iv && !msg.deletedAt && !msg.undecryptable && typeof msg.displayContent === 'string') {
+    const env = parseEnvelope(msg.displayContent);
+    if (env.isEnvelope) out = { ...out, displayContent: env.text, reply: env.reply, attachments: env.attachments };
+  }
+  return { ...out, reactionList: await decodeReactions(msg.roomId, msg.reactions) };
+}
+
 async function decorateWithDisplayContent(msg) {
+  return enrichMessage(await decorateContentOnly(msg));
+}
+
+async function decorateContentOnly(msg) {
   if (msg.keyMode === 'group') return decorateGroupMessage(msg);
   if (!msg.iv) {
     return { ...msg, displayContent: msg.content };
@@ -387,6 +442,7 @@ function updateKeyBanner(room) {
 
 function updateComposerAvailability(room) {
   updateKeyBanner(room);
+  syncComposerRoom(room);
   const input = $('composer-input');
   const sendBtn = $('composer-send');
 
@@ -606,6 +662,354 @@ function renderChatHeader(room) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Replies, reactions and images (encrypted conversations only)
+// ---------------------------------------------------------------------------
+
+const ICON_ATTRS = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+const ICONS = {
+  reply: `<svg ${ICON_ATTRS}><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v3"/></svg>`,
+  smile: `<svg ${ICON_ATTRS}><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5h.01M15 9.5h.01"/></svg>`,
+  edit: `<svg ${ICON_ATTRS}><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`,
+  trash: `<svg ${ICON_ATTRS}><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>`,
+};
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+function canUseRichFeatures(room) {
+  return !!room && (!room.isGroup || !!room.encrypted);
+}
+
+function makeActionButton(title, iconSvg, onClick) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'msg-action-btn';
+  btn.title = title;
+  btn.setAttribute('aria-label', title);
+  btn.innerHTML = iconSvg; // trusted constant above
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function messageSnippet(msg) {
+  const text = (msg.displayContent || '').replace(/\s+/g, ' ').trim();
+  if (text) return text.slice(0, 120);
+  return msg.attachments && msg.attachments.length ? '📷 Photo' : '';
+}
+
+// ---- composer: reply bar + image previews ----
+function renderComposerExtras() {
+  const box = $('composer-extra');
+  box.innerHTML = '';
+  if (composerExtras.reply) {
+    const bar = document.createElement('div');
+    bar.className = 'reply-bar';
+    const body = document.createElement('div');
+    body.className = 'reply-bar-body';
+    const name = document.createElement('span');
+    name.className = 'reply-bar-name';
+    name.textContent = `Replying to ${composerExtras.reply.name}`;
+    const text = document.createElement('span');
+    text.className = 'reply-bar-text';
+    text.textContent = composerExtras.reply.snippet || 'Message';
+    body.append(name, text);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'reply-close';
+    close.setAttribute('aria-label', 'Cancel reply');
+    close.textContent = '×';
+    close.addEventListener('click', () => {
+      composerExtras.reply = null;
+      renderComposerExtras();
+    });
+    bar.append(body, close);
+    box.appendChild(bar);
+  }
+  if (composerExtras.images.length > 0) {
+    const strip = document.createElement('div');
+    strip.className = 'attach-strip';
+    composerExtras.images.forEach((img, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'attach-chip';
+      const thumb = document.createElement('img');
+      thumb.src = img.previewUrl;
+      thumb.alt = 'Image to send';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'attach-remove';
+      remove.setAttribute('aria-label', 'Remove image');
+      remove.textContent = '×';
+      remove.addEventListener('click', () => {
+        URL.revokeObjectURL(img.previewUrl);
+        composerExtras.images.splice(i, 1);
+        renderComposerExtras();
+      });
+      chip.append(thumb, remove);
+      strip.appendChild(chip);
+    });
+    box.appendChild(strip);
+  }
+  box.classList.toggle('hidden', !composerExtras.reply && composerExtras.images.length === 0);
+}
+
+function clearComposerExtras() {
+  composerExtras.images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+  composerExtras.images = [];
+  composerExtras.reply = null;
+  composerExtras.roomId = null;
+  renderComposerExtras();
+}
+
+// A reply or an unsent image belongs to the room it was started in.
+function syncComposerRoom(room) {
+  $('attach-btn').classList.toggle('hidden', !canUseRichFeatures(room));
+  if (composerExtras.roomId && composerExtras.roomId !== room.id) clearComposerExtras();
+}
+
+function startReply(msg) {
+  composerExtras.reply = {
+    id: msg.id,
+    name: msg.senderId === state.me.id ? 'yourself' : msg.senderUsername,
+    snippet: messageSnippet(msg),
+  };
+  composerExtras.roomId = msg.roomId;
+  renderComposerExtras();
+  $('composer-input').focus();
+}
+
+async function addImageFiles(files) {
+  const room = state.rooms.find((r) => r.id === state.activeRoomId);
+  if (!canUseRichFeatures(room)) return;
+  for (const file of files) {
+    if (composerExtras.images.length >= 4) {
+      showToast('You can attach up to 4 images per message.');
+      break;
+    }
+    try {
+      const prepared = await resizeImageFile(file);
+      composerExtras.images.push({
+        ...prepared,
+        previewUrl: URL.createObjectURL(new Blob([prepared.bytes], { type: prepared.mime })),
+      });
+      composerExtras.roomId = room.id;
+    } catch (err) {
+      showToast(err.message || 'Could not read that image.');
+    }
+  }
+  renderComposerExtras();
+}
+
+$('attach-btn').addEventListener('click', () => $('attach-input').click());
+$('attach-input').addEventListener('change', (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  addImageFiles(files);
+});
+$('composer-input').addEventListener('paste', (e) => {
+  const files = [...((e.clipboardData && e.clipboardData.files) || [])].filter((f) => f.type.startsWith('image/'));
+  if (files.length > 0) {
+    e.preventDefault();
+    addImageFiles(files);
+  }
+});
+
+// ---- quoted reply inside a message ----
+function renderReplyQuote(msg) {
+  const original = (state.messagesByRoom.get(msg.roomId) || []).find((m) => m.id === msg.reply.id);
+  let name = msg.reply.name;
+  let snippet = msg.reply.snippet;
+  if (original && original.deletedAt) {
+    snippet = 'Message deleted';
+  } else if (original && !original.undecryptable) {
+    // Prefer the real, locally decrypted original over the sender's embedded quote.
+    name = original.senderId === state.me.id ? 'You' : original.senderUsername;
+    snippet = messageSnippet(original);
+  }
+  const quote = document.createElement('button');
+  quote.type = 'button';
+  quote.className = 'msg-reply';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'msg-reply-name';
+  nameEl.textContent = name || 'Message';
+  const textEl = document.createElement('span');
+  textEl.className = 'msg-reply-text';
+  textEl.textContent = snippet || 'Message';
+  quote.append(nameEl, textEl);
+  quote.addEventListener('click', () => {
+    const target = [...document.querySelectorAll('.msg-row')].find((r) => r.dataset.messageId === msg.reply.id);
+    if (!target) {
+      showToast('That message is not loaded. Scroll up to load older messages.');
+      return;
+    }
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    target.classList.add('msg-flash');
+    setTimeout(() => target.classList.remove('msg-flash'), 1400);
+  });
+  return quote;
+}
+
+// ---- images: fetched as ciphertext, decrypted in the browser ----
+const imageUrls = new Map(); // attachment id -> Promise<blob: URL>
+
+function loadAttachmentUrl(roomId, att) {
+  if (!imageUrls.has(att.id)) {
+    const promise = (async () => {
+      const res = await fetch(`/api/rooms/${roomId}/attachments/${att.id}`, { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('Image not available');
+      const plain = await decryptAttachmentBytes(new Uint8Array(await res.arrayBuffer()), att.key);
+      return URL.createObjectURL(new Blob([plain], { type: att.mime }));
+    })();
+    promise.catch(() => imageUrls.delete(att.id));
+    imageUrls.set(att.id, promise);
+  }
+  return imageUrls.get(att.id);
+}
+
+function clearImageCache() {
+  imageUrls.forEach((p) => p.then((url) => URL.revokeObjectURL(url)).catch(() => {}));
+  imageUrls.clear();
+}
+
+function openLightbox(url) {
+  $('lightbox-img').src = url;
+  $('lightbox').classList.remove('hidden');
+}
+
+function closeLightbox() {
+  $('lightbox').classList.add('hidden');
+  $('lightbox-img').removeAttribute('src');
+}
+
+$('lightbox').addEventListener('click', closeLightbox);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeLightbox();
+});
+
+function renderImages(msg) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-images';
+  msg.attachments.forEach((att) => {
+    const box = document.createElement('button');
+    box.type = 'button';
+    box.className = 'msg-image loading';
+    if (att.width && att.height) box.style.aspectRatio = `${att.width} / ${att.height}`;
+    const img = document.createElement('img');
+    img.alt = 'Photo';
+    box.appendChild(img);
+    loadAttachmentUrl(msg.roomId, att)
+      .then((url) => {
+        img.src = url;
+        box.classList.remove('loading');
+        box.addEventListener('click', () => openLightbox(url));
+      })
+      .catch(() => {
+        box.classList.remove('loading');
+        box.classList.add('broken');
+        box.textContent = 'Image unavailable';
+      });
+    wrap.appendChild(box);
+  });
+  return wrap;
+}
+
+// ---- reactions ----
+let openPicker = null;
+
+function closeReactionPicker() {
+  if (openPicker) {
+    openPicker.remove();
+    openPicker = null;
+  }
+}
+
+document.addEventListener('click', (e) => {
+  if (openPicker && !e.target.closest('.reaction-picker') && !e.target.closest('.msg-action-btn')) closeReactionPicker();
+});
+
+function openReactionPicker(msg, row) {
+  closeReactionPicker();
+  const picker = document.createElement('div');
+  picker.className = 'reaction-picker';
+  QUICK_REACTIONS.forEach((emoji) => {
+    const pick = document.createElement('button');
+    pick.type = 'button';
+    pick.className = 'reaction-pick';
+    pick.textContent = emoji;
+    pick.setAttribute('aria-label', `React with ${emoji}`);
+    pick.addEventListener('click', () => {
+      closeReactionPicker();
+      toggleReaction(msg, emoji);
+    });
+    picker.appendChild(pick);
+  });
+  row.appendChild(picker);
+  openPicker = picker;
+}
+
+// Choosing your current reaction again removes it; choosing another replaces it.
+async function toggleReaction(msg, emoji) {
+  const room = state.rooms.find((r) => r.id === msg.roomId);
+  if (!canUseRichFeatures(room)) return;
+  const mine = (msg.reactionList || []).find((r) => r.userId === state.me.id);
+  try {
+    if (mine && mine.emoji === emoji) {
+      await api.removeReaction(msg.roomId, msg.id);
+      return;
+    }
+    const payload = room.isGroup ? await prepareGroupPayload(room, emoji) : await prepareEncryptedPayload(room, emoji);
+    if (!payload) {
+      showToast('Cannot react yet: this conversation’s key is not ready.');
+      return;
+    }
+    await api.setReaction(msg.roomId, msg.id, payload);
+  } catch (err) {
+    showToast(err.message || 'Could not add that reaction.');
+  }
+}
+
+function renderReactionChips(msg) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-reactions';
+  const groups = new Map();
+  msg.reactionList.forEach((r) => {
+    if (!groups.has(r.emoji)) groups.set(r.emoji, []);
+    groups.get(r.emoji).push(r);
+  });
+  groups.forEach((list, emoji) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'reaction-chip';
+    if (list.some((r) => r.userId === state.me.id)) chip.classList.add('mine');
+    const face = document.createElement('span');
+    face.textContent = emoji;
+    const count = document.createElement('span');
+    count.textContent = String(list.length);
+    chip.append(face, count);
+    chip.title = list.map((r) => (r.userId === state.me.id ? 'You' : r.username)).join(', ');
+    chip.addEventListener('click', () => toggleReaction(msg, emoji));
+    wrap.appendChild(chip);
+  });
+  return wrap;
+}
+
+async function handleReactionUpdated({ roomId, messageId, userId, reaction }) {
+  const list = state.messagesByRoom.get(roomId);
+  const idx = list ? list.findIndex((m) => m.id === messageId) : -1;
+  if (idx === -1) return;
+  const reactions = (list[idx].reactions || []).filter((r) => r.userId !== userId);
+  if (reaction) reactions.push(reaction);
+  const updated = { ...list[idx], reactions, reactionList: await decodeReactions(roomId, reactions) };
+  list[idx] = updated;
+  if (state.activeRoomId === roomId) {
+    const row = [...document.querySelectorAll('.msg-row')].find((r) => r.dataset.messageId === messageId);
+    if (row) row.replaceWith(renderMessageRow(updated));
+  }
+}
+
+// When editing, the reply and images of the original message are kept.
+function editPlain(msg, text) {
+  return buildEnvelopeText({ text, reply: msg.reply || null, attachments: msg.attachments || [] });
+}
+
 function renderMessageRow(msg) {
   const mine = msg.senderId === state.me.id;
   const row = document.createElement('div');
@@ -642,29 +1046,29 @@ function renderMessageRow(msg) {
     bubble.textContent = msg.displayContent ?? msg.content;
   }
 
-  body.append(meta, bubble);
+  const hasText = !!(msg.displayContent ?? msg.content);
+  const hasImages = !msg.deletedAt && !!(msg.attachments && msg.attachments.length);
+  const parts = [meta];
+  if (!msg.deletedAt && msg.reply) parts.push(renderReplyQuote(msg));
+  if (msg.deletedAt || hasText || !hasImages) parts.push(bubble);
+  if (hasImages) parts.push(renderImages(msg));
+  if (!msg.deletedAt && msg.reactionList && msg.reactionList.length > 0) parts.push(renderReactionChips(msg));
+  body.append(...parts);
   row.append(avatar, body);
 
-  if (mine && !msg.deletedAt) {
+  if (!msg.deletedAt) {
+    const room = state.rooms.find((r) => r.id === msg.roomId);
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
-
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'msg-action-btn';
-    editBtn.title = 'Edit';
-    editBtn.textContent = '✏️';
-    editBtn.addEventListener('click', () => enterEditMode(msg, row));
-
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'msg-action-btn';
-    deleteBtn.title = 'Delete';
-    deleteBtn.textContent = '🗑';
-    deleteBtn.addEventListener('click', () => confirmDeleteMessage(msg));
-
-    actions.append(editBtn, deleteBtn);
-    row.appendChild(actions);
+    if (canUseRichFeatures(room) && !msg.undecryptable) {
+      actions.append(
+        makeActionButton('Reply', ICONS.reply, () => startReply(msg)),
+        makeActionButton('React', ICONS.smile, () => openReactionPicker(msg, row))
+      );
+    }
+    if (mine && hasText) actions.appendChild(makeActionButton('Edit', ICONS.edit, () => enterEditMode(msg, row)));
+    if (mine) actions.appendChild(makeActionButton('Delete', ICONS.trash, () => confirmDeleteMessage(msg)));
+    if (actions.children.length > 0) row.appendChild(actions);
   }
 
   return row;
@@ -716,7 +1120,7 @@ function enterEditMode(msg, row) {
     let payload = { roomId: msg.roomId, messageId: msg.id, content: newContent };
     const room = state.rooms.find((r) => r.id === msg.roomId);
     if (room && room.isGroup && room.encrypted) {
-      const encrypted = await prepareGroupPayload(room, newContent);
+      const encrypted = await prepareGroupPayload(room, editPlain(msg, newContent));
       if (!encrypted) {
         showToast('Cannot edit yet: the group key is not available.');
         saveBtn.disabled = false;
@@ -724,7 +1128,7 @@ function enterEditMode(msg, row) {
       }
       payload = { roomId: msg.roomId, messageId: msg.id, ...encrypted };
     } else if (room && !room.isGroup) {
-      const encrypted = await prepareEncryptedPayload(room, newContent);
+      const encrypted = await prepareEncryptedPayload(room, editPlain(msg, newContent));
       if (!encrypted) {
         showToast('Cannot edit — secure messaging is not ready for this conversation.');
         saveBtn.disabled = false;
@@ -1427,41 +1831,69 @@ composerInput.addEventListener('keydown', (e) => {
   }
 });
 
+let composerBusy = false;
+
 composerForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const content = composerInput.value.trim();
+  if (composerBusy) return;
+  const text = composerInput.value.trim();
   const roomId = state.activeRoomId;
-  if (!content || !roomId) return;
-
   const room = state.rooms.find((r) => r.id === roomId);
-  let payload = { roomId, content };
+  const rich = canUseRichFeatures(room);
+  const images = rich ? composerExtras.images : [];
+  if ((!text && images.length === 0) || !roomId) return;
 
-  if (room && room.isGroup && room.encrypted) {
-    const encrypted = await prepareGroupPayload(room, content);
-    if (!encrypted) {
-      showToast('Cannot send yet: waiting for a member to share the group key.');
-      return;
+  composerBusy = true;
+  const sendBtn = $('composer-send');
+  sendBtn.disabled = true;
+  try {
+    // Each image gets its own one-time key; only ciphertext is uploaded.
+    const attachments = [];
+    for (const img of images) {
+      sendBtn.textContent = 'Uploading…';
+      const { blob, keyB64 } = await encryptAttachmentBytes(img.bytes);
+      const uploaded = await api.uploadAttachment(roomId, blob);
+      attachments.push({ id: uploaded.id, key: keyB64, mime: img.mime, width: img.width, height: img.height, size: img.bytes.length });
     }
-    payload = { roomId, ...encrypted };
-  } else if (room && !room.isGroup) {
-    const encrypted = await prepareEncryptedPayload(room, content);
-    if (!encrypted) {
-      showToast('Cannot send yet — secure messaging is not ready for this conversation.');
-      return;
+    const content = rich ? buildEnvelopeText({ text, reply: composerExtras.reply, attachments }) : text;
+    let payload = { roomId, content };
+
+    if (room && room.isGroup && room.encrypted) {
+      const encrypted = await prepareGroupPayload(room, content);
+      if (!encrypted) {
+        showToast('Cannot send yet: waiting for a member to share the group key.');
+        return;
+      }
+      payload = { roomId, ...encrypted };
+    } else if (room && !room.isGroup) {
+      const encrypted = await prepareEncryptedPayload(room, content);
+      if (!encrypted) {
+        showToast('Cannot send yet — secure messaging is not ready for this conversation.');
+        return;
+      }
+      payload = { roomId, ...encrypted };
     }
-    payload = { roomId, ...encrypted };
-  }
+    if (attachments.length > 0) payload.attachmentIds = attachments.map((a) => a.id);
 
-  emitSocket('message:send', payload, (res) => {
-    if (res && res.error) showToast(res.error);
-  });
+    emitSocket('message:send', payload, (res) => {
+      if (res && res.error) showToast(res.error);
+    });
 
-  composerInput.value = '';
-  autoGrow(composerInput);
-  clearTimeout(typingTimeout);
-  if (isCurrentlyTyping) {
-    isCurrentlyTyping = false;
-    emitSocket('typing:stop', { roomId });
+    composerInput.value = '';
+    autoGrow(composerInput);
+    clearComposerExtras();
+    clearTimeout(typingTimeout);
+    if (isCurrentlyTyping) {
+      isCurrentlyTyping = false;
+      emitSocket('typing:stop', { roomId });
+    }
+  } catch (err) {
+    showToast(err.message || 'Could not send your message.');
+  } finally {
+    composerBusy = false;
+    sendBtn.textContent = 'Send';
+    if (room) updateComposerAvailability(room);
+    else sendBtn.disabled = false;
   }
 });
 
@@ -1582,6 +2014,8 @@ $('logout-btn').addEventListener('click', async () => {
   state.me = null;
   setKeyOwner(null);
   keyring.clear();
+  clearImageCache();
+  clearComposerExtras();
   state.rooms = [];
   state.activeRoomId = null;
   state.messagesByRoom.clear();
@@ -1655,6 +2089,7 @@ async function initApp(user) {
   onSocket('group:keys-updated', handleGroupKeysUpdated);
   onSocket('group:settings-updated', handleGroupSettingsUpdated);
   onSocket('room:removed', handleRoomRemoved);
+  onSocket('reaction:updated', handleReactionUpdated);
 
   try {
     const data = await api.listRooms();

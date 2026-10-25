@@ -1260,3 +1260,302 @@ a {
 .group-leave {
   padding-left: 0;
 }
+
+/* ---- chat features: replies, reactions, images ---- */
+.msg-row {
+  position: relative;
+}
+
+.msg-action-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.msg-reply {
+  display: block;
+  width: 100%;
+  max-width: 340px;
+  text-align: left;
+  background: var(--surface);
+  border: none;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.msg-row.mine .msg-reply {
+  margin-left: auto;
+}
+
+.msg-reply-name {
+  display: block;
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.msg-reply-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-flash .msg-bubble,
+.msg-flash .msg-image {
+  animation: msg-flash 1.2s ease-out;
+}
+
+@keyframes msg-flash {
+  from {
+    box-shadow: 0 0 0 3px var(--accent);
+  }
+  to {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.msg-row.mine .msg-images {
+  justify-content: flex-end;
+}
+
+.msg-image {
+  display: block;
+  position: relative;
+  width: 260px;
+  max-width: 100%;
+  min-height: 80px;
+  padding: 0;
+  border: none;
+  background: var(--surface-raised);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  cursor: zoom-in;
+  color: inherit;
+}
+
+.msg-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.msg-image.loading {
+  min-height: 120px;
+  cursor: default;
+  animation: image-pulse 1.2s ease-in-out infinite;
+}
+
+.msg-image.broken {
+  padding: 22px 14px;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: default;
+}
+
+@keyframes image-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.msg-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.msg-row.mine .msg-reactions {
+  justify-content: flex-end;
+}
+
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  font-size: 13px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.reaction-chip.mine {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.reaction-chip span:last-child {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.reaction-picker {
+  position: absolute;
+  bottom: calc(100% - 6px);
+  left: 44px;
+  z-index: 20;
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.msg-row.mine .reaction-picker {
+  left: auto;
+  right: 44px;
+}
+
+.reaction-pick {
+  background: none;
+  border: none;
+  font-size: 20px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.reaction-pick:hover {
+  background: var(--surface-hover);
+}
+
+.composer-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 20px 0;
+  border-top: 1px solid var(--border);
+}
+
+.composer-extra.hidden {
+  display: none;
+}
+
+.composer-extra:not(.hidden) + .composer {
+  border-top: none;
+}
+
+.reply-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.reply-bar-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.reply-bar-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.reply-bar-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.reply-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.attach-chip {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.attach-chip img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attach-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.composer .icon-btn {
+  align-self: center;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(5, 8, 18, 0.9);
+  cursor: zoom-out;
+}
+
+.lightbox.hidden {
+  display: none;
+}
+
+.lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-md);
+}

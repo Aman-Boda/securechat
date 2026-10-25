@@ -3,6 +3,7 @@ const userRepo = require('../db/repositories/userRepo');
 const roomRepo = require('../db/repositories/roomRepo');
 const messageRepo = require('../db/repositories/messageRepo');
 const { validateGroupPayload } = require('../utils/groupPayload');
+const { parseAttachmentIds } = require('../utils/attachmentIds');
 const { sanitizeMessageContent } = require('../utils/sanitize');
 
 // userId -> Set<socketId>. Lets a user have multiple tabs/devices open
@@ -103,7 +104,7 @@ function initSockets(io) {
       if (roomId) socket.leave(`room:${roomId}`);
     });
 
-    socket.on('message:send', async ({ roomId, content, iv, epochIndex, senderEpochPublicKey, keyMode } = {}, ack) => {
+    socket.on('message:send', async ({ roomId, content, iv, epochIndex, senderEpochPublicKey, keyMode, attachmentIds } = {}, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
       try {
         if (!roomId) return reply({ error: 'roomId is required.' });
@@ -143,11 +144,12 @@ function initSockets(io) {
             keyMode,
             senderId: user.id,
             roomId,
+            attachmentIds: parseAttachmentIds(attachmentIds),
           });
         } else if (room.encrypted) {
           // Encrypted group: same rule as DMs, the server only checks the shape
           // and that the sender holds the key generation they used.
-          const parsed = await validateGroupPayload(room, { content, iv, epochIndex, keyMode }, user.id);
+          const parsed = await validateGroupPayload(room, { content, iv, epochIndex, keyMode, attachmentIds }, user.id);
           if (parsed.error) return reply({ error: parsed.error });
           message = await messageRepo.createMessage({ ...parsed, senderId: user.id, roomId });
         } else {
@@ -160,7 +162,7 @@ function initSockets(io) {
         reply({ message });
       } catch (err) {
         console.error('message:send failed:', err);
-        reply({ error: 'Something went wrong sending your message.' });
+        reply({ error: err.expose ? err.message : 'Something went wrong sending your message.' });
       }
     });
 

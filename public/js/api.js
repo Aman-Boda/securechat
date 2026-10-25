@@ -48,6 +48,31 @@ export const api = {
   listJoinableRooms: () => apiFetch('/api/rooms/joinable'),
   createGroup: (payload) => apiFetch('/api/rooms/group', { method: 'POST', body: JSON.stringify(payload) }),
   getGroupKeys: (roomId) => apiFetch(`/api/rooms/${roomId}/keys`),
+  // Encrypted image bytes (iv + AES-GCM ciphertext). The server cannot read them.
+  uploadAttachment: async (roomId, bytes) => {
+    const res = await fetch(`/api/rooms/${roomId}/attachments`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: bytes,
+    });
+    let data = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+    if (!res.ok) {
+      const err = new Error((data && data.error) || `Upload failed (${res.status})`);
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  },
+  setReaction: (roomId, messageId, payload) =>
+    apiFetch(`/api/rooms/${roomId}/messages/${messageId}/reaction`, { method: 'PUT', body: JSON.stringify(payload) }),
+  removeReaction: (roomId, messageId) =>
+    apiFetch(`/api/rooms/${roomId}/messages/${messageId}/reaction`, { method: 'DELETE' }),
   getGroupKeyStatus: (roomId) => apiFetch(`/api/rooms/${roomId}/key-status`),
   putGroupKeys: (roomId, body) => apiFetch(`/api/rooms/${roomId}/keys`, { method: 'PUT', body: JSON.stringify(body) }),
   addGroupMember: (roomId, userId) =>

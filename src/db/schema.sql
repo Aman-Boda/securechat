@@ -138,6 +138,42 @@ CREATE TABLE IF NOT EXISTS group_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_group_keys_user_room ON group_keys(user_id, room_id);
 
+-- Chat features inside ENCRYPTED conversations (DMs and encrypted groups).
+-- Replies live inside the encrypted message itself, so they need no columns.
+--   attachment_ids  ids of encrypted image blobs sent with a message (the keys
+--                   to open them are inside the encrypted message, never here)
+--   reactions       one per person per message; the emoji is encrypted exactly
+--                   like a message body
+--   attachments     opaque ciphertext blobs; removed with their message, and
+--                   unsent uploads are cleaned up after a day
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_ids TEXT[] NOT NULL DEFAULT '{}';
+
+CREATE TABLE IF NOT EXISTS reactions (
+  message_id              TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  user_id                 TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  room_id                 TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  content                 TEXT NOT NULL,
+  iv                      TEXT NOT NULL,
+  epoch_index             BIGINT,
+  sender_epoch_public_key TEXT,
+  key_mode                TEXT NOT NULL,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_room ON reactions(room_id);
+
+CREATE TABLE IF NOT EXISTS attachments (
+  id          TEXT PRIMARY KEY,
+  room_id     TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  uploader_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  message_id  TEXT REFERENCES messages(id) ON DELETE SET NULL,
+  size        INTEGER NOT NULL,
+  data        BYTEA NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_pending ON attachments(uploader_id) WHERE message_id IS NULL;
+
 -- An opaque, password-encrypted backup of a user's local keys (identity +
 -- retained ephemeral keys), letting them restore message-decryption
 -- ability on a new device. The server only ever stores ciphertext: it

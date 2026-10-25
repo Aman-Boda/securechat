@@ -1,6 +1,7 @@
 const messageRepo = require('../db/repositories/messageRepo');
 const { sanitizeMessageContent } = require('../utils/sanitize');
 const { validateGroupPayload } = require('../utils/groupPayload');
+const { parseAttachmentIds } = require('../utils/attachmentIds');
 
 const MAX_CIPHERTEXT_LENGTH = 8000; // generous — encrypted content is ~33% larger than plaintext, plus overhead
 
@@ -35,7 +36,7 @@ function validateEncryptedPayload(body) {
   if (keyMode !== 'mutual' && keyMode !== 'identity') {
     return { error: "keyMode must be 'mutual' or 'identity'." };
   }
-  return { content, iv, epochIndex, senderEpochPublicKey, keyMode };
+  return { content, iv, epochIndex, senderEpochPublicKey, keyMode, attachmentIds: parseAttachmentIds(body.attachmentIds) };
 }
 
 // REST fallback for sending a message (the primary path is the Socket.io
@@ -131,4 +132,4 @@ async function del(req, res) {
   return res.status(204).send();
 }
 
-module.exports = { history, send, edit, del };
+module.exports = { history, send, edit, del, validateEncryptedPayload };

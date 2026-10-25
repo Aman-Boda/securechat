@@ -12,7 +12,10 @@ const { Server } = require('socket.io');
 const { port, clientOrigin, isProduction } = require('./config/env');
 
 const { requireAuth } = require('./middleware/auth');
-const { backupLimiter } = require('./middleware/rateLimiter');
+const { backupLimiter, attachmentLimiter } = require('./middleware/rateLimiter');
+const { requireRoomMembership } = require('./middleware/roomAccess');
+const { asyncHandler } = require('./utils/asyncHandler');
+const attachmentController = require('./controllers/attachmentController');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const roomRoutes = require('./routes/rooms');
@@ -35,7 +38,7 @@ app.use(
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'"],
-        imgSrc: ["'self'", 'data:'],
+        imgSrc: ["'self'", 'data:', 'blob:'], // blob: = decrypted images shown in the page
         connectSrc: ["'self'"],
         fontSrc: ["'self'"],
         objectSrc: ["'none'"],
@@ -52,6 +55,16 @@ app.use(cookieParser());
 // one route only, and only after authentication and rate limiting, so an
 // anonymous client can never make the server buffer a large body.
 app.put('/api/users/me/key-backup', requireAuth, backupLimiter, express.json({ limit: '20mb' }));
+// Encrypted image upload: a raw binary body, accepted only from a logged-in member
+// of the room, rate limited, and only then read (never buffered for anyone else).
+app.post(
+  '/api/rooms/:roomId/attachments',
+  requireAuth,
+  attachmentLimiter,
+  requireRoomMembership,
+  express.raw({ type: 'application/octet-stream', limit: '1100kb' }),
+  asyncHandler(attachmentController.upload)
+);
 app.use(express.json({ limit: '100kb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -75,12 +88,12 @@ app.use((req, res) => {
 // stack traces or internals to the client.
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error(err);
+  if (!err.expose) console.error(err); // user-facing errors (e.g. an image was already used) are not crashes
   if (res.headersSent) return next(err);
   const status = err.status >= 400 && err.status < 500 ? err.status : 500;
   res.status(status).json({
     error:
-      status === 413 ? 'That request is too large.' : status < 500 ? 'Bad request.' : 'Something went wrong on our end.',
+      err.expose ? err.message : status === 413 ? 'That request is too large.' : status < 500 ? 'Bad request.' : 'Something went wrong on our end.',
   });
 });
 

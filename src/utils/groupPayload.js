@@ -1,4 +1,5 @@
 const groupKeyRepo = require('../db/repositories/groupKeyRepo');
+const { parseAttachmentIds } = require('./attachmentIds');
 
 const MAX_CIPHERTEXT_LENGTH = 8000;
 
@@ -18,7 +19,7 @@ async function validateGroupPayload(room, body, userId) {
   if (!(await groupKeyRepo.hasKey(room.id, userId, epochIndex))) {
     return { error: 'You do not hold that group key yet.' };
   }
-  return { content, iv, epochIndex, keyMode: 'group' };
+  return { content, iv, epochIndex, keyMode: 'group', attachmentIds: parseAttachmentIds(body && body.attachmentIds) };
 }
 
 module.exports = { validateGroupPayload };

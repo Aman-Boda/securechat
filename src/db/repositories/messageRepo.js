@@ -1,5 +1,15 @@
 const crypto = require('node:crypto');
 const { pool } = require('../index');
+const reactionRepo = require('./reactionRepo');
+
+// An error the client is allowed to see verbatim (REST error handler + socket acks).
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+    this.expose = true;
+  }
+}
 
 function toDto(row) {
   return {
@@ -7,6 +17,7 @@ function toDto(row) {
     content: row.content,
     iv: row.iv,
     // Forward-secrecy fields — only meaningful for encrypted DM messages.
+    // (For encrypted GROUP messages, epochIndex is the group key generation.)
     epochIndex: row.epoch_index === null ? null : Number(row.epoch_index),
     senderEpochPublicKey: row.sender_epoch_public_key ? JSON.parse(row.sender_epoch_public_key) : null,
     keyMode: row.key_mode,
@@ -17,17 +28,29 @@ function toDto(row) {
     senderId: row.sender_id,
     senderUsername: row.sender_username,
     senderAvatarColor: row.sender_avatar_color,
+    // Ids of encrypted image blobs sent with this message. The keys to open
+    // them are inside the encrypted message itself, never here.
+    attachmentIds: row.attachment_ids || [],
+    reactions: [],
   };
 }
 
 const SELECT_WITH_SENDER = `
   SELECT m.id, m.content, m.iv, m.epoch_index, m.sender_epoch_public_key, m.key_mode,
-         m.created_at, m.edited_at, m.deleted_at, m.room_id, m.sender_id,
+         m.created_at, m.edited_at, m.deleted_at, m.room_id, m.sender_id, m.attachment_ids,
          u.username AS sender_username, u.avatar_color AS sender_avatar_color
   FROM messages m
   JOIN users u ON u.id = m.sender_id
 `;
 
+async function withReactions(dtos) {
+  const byMessage = await reactionRepo.listForMessages(dtos.map((d) => d.id));
+  for (const dto of dtos) dto.reactions = byMessage.get(dto.id) || [];
+  return dtos;
+}
+
+// attachmentIds are linked to the new message in the SAME transaction, and
+// only if they were uploaded by this sender, to this room, and not used yet.
 async function createMessage({
   content,
   senderId,
@@ -36,29 +59,51 @@ async function createMessage({
   epochIndex = null,
   senderEpochPublicKey = null,
   keyMode = null,
+  attachmentIds = [],
 }) {
   const id = crypto.randomUUID();
-  await pool.query(
-    `INSERT INTO messages (id, content, iv, epoch_index, sender_epoch_public_key, key_mode, sender_id, room_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [
-      id,
-      content,
-      iv,
-      epochIndex,
-      senderEpochPublicKey ? JSON.stringify(senderEpochPublicKey) : null,
-      keyMode,
-      senderId,
-      roomId,
-    ]
-  );
-  const result = await pool.query(`${SELECT_WITH_SENDER} WHERE m.id = $1`, [id]);
-  return toDto(result.rows[0]);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO messages (id, content, iv, epoch_index, sender_epoch_public_key, key_mode, sender_id, room_id, attachment_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        id,
+        content,
+        iv,
+        epochIndex,
+        senderEpochPublicKey ? JSON.stringify(senderEpochPublicKey) : null,
+        keyMode,
+        senderId,
+        roomId,
+        attachmentIds,
+      ]
+    );
+    if (attachmentIds.length > 0) {
+      const linked = await client.query(
+        `UPDATE attachments SET message_id = $1
+         WHERE id = ANY($2) AND room_id = $3 AND uploader_id = $4 AND message_id IS NULL`,
+        [id, attachmentIds, roomId, senderId]
+      );
+      if (linked.rowCount !== attachmentIds.length) {
+        throw new HttpError(400, 'An attached image is missing or was already used. Please attach it again.');
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  return getMessageById(id);
 }
 
 async function getMessageById(id) {
   const result = await pool.query(`${SELECT_WITH_SENDER} WHERE m.id = $1`, [id]);
-  return result.rows[0] ? toDto(result.rows[0]) : null;
+  if (!result.rows[0]) return null;
+  return (await withReactions([toDto(result.rows[0])]))[0];
 }
 
 // Content/iv are replaced (re-encrypted client-side for DMs before this is
@@ -67,7 +112,7 @@ async function getMessageById(id) {
 // original message's epoch/key-mode/sender-epoch-key — an edit is
 // encrypted fresh, but under the same forward-secrecy terms as the
 // original send (new iv, new ciphertext, same epoch bookkeeping the caller
-// already worked out when it re-encrypted).
+// already worked out when it re-encrypted). Attached images are unchanged.
 async function updateMessage(id, { content, iv = null, epochIndex = null, senderEpochPublicKey = null, keyMode = null }) {
   await pool.query(
     `UPDATE messages
@@ -80,14 +125,17 @@ async function updateMessage(id, { content, iv = null, epochIndex = null, sender
 
 // A real (not just hidden) delete of the content — the row stays as a
 // tombstone so the conversation shows "message deleted", but the actual
-// text/ciphertext is gone from the database, not just flagged.
+// text/ciphertext is gone from the database, not just flagged. The message's
+// reactions and attached image blobs are deleted with it.
 async function softDeleteMessage(id) {
   await pool.query(
     `UPDATE messages
-     SET content = '', iv = NULL, sender_epoch_public_key = NULL, key_mode = NULL, deleted_at = now()
+     SET content = '', iv = NULL, sender_epoch_public_key = NULL, key_mode = NULL, attachment_ids = '{}', deleted_at = now()
      WHERE id = $1`,
     [id]
   );
+  await pool.query('DELETE FROM attachments WHERE message_id = $1', [id]);
+  await pool.query('DELETE FROM reactions WHERE message_id = $1', [id]);
   return getMessageById(id);
 }
 
@@ -104,7 +152,7 @@ async function listMessagesForRoom(roomId, { before = null, limit = 50 } = {}) {
      LIMIT $3`,
     [roomId, before, limit]
   );
-  return result.rows.map(toDto).reverse();
+  return withReactions(result.rows.map(toDto).reverse());
 }
 
 // Messages in this room, after `since`, sent by anyone other than
@@ -121,6 +169,7 @@ async function countUnread(roomId, since, excludeSenderId) {
 }
 
 module.exports = {
+  HttpError,
   createMessage,
   getMessageById,
   updateMessage,

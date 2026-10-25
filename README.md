@@ -258,6 +258,28 @@ could add a fake member and read what is sent after that; people who left keep
 whatever they already decrypted; re-adding someone to a full-history group gives
 them the whole history again; and a group is limited to 100 members.
 
+**Replies, reactions and images.** These work in DMs and in the new encrypted
+groups (older plaintext groups stay as they were), and they keep the
+end-to-end promise:
+
+- **Replies** live *inside* the encrypted message (a reference to the original
+  plus a short quote), so the server cannot see who is replying to what.
+- **Reactions** are encrypted exactly like messages. The server knows that
+  someone reacted to a message, never with which emoji. One reaction per person
+  per message; choosing the same emoji again removes it.
+- **Images** (up to 4 per message) are shrunk in the browser (at most 1280px,
+  JPEG, which also strips camera metadata such as GPS), encrypted with a fresh
+  one-time AES-256-GCM key, and uploaded as an opaque blob. The key travels
+  *inside* the encrypted message, so only people who can read the message can
+  open the image. Blobs are limited to 1 MB, removed when their message is
+  deleted, and uploads never attached to a message are cleaned up after a day.
+
+What the server can still see: that a message has N images and their (encrypted)
+sizes, who reacted to which message, and timing. Limits: GIFs are sent as still
+images; no video or other files; blobs are stored in your Postgres database (on
+Supabase's free 500 MB tier that is plenty for photos at ~100-400 KB each, but
+object storage would be the next step for heavy use).
+
 **What "active" means.** Your hourly key is published when you open the app
 (and refreshed each hour while it stays open), not only when you send. So
 anyone who had the app open during an hour can receive messages under the
